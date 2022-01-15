@@ -45,7 +45,7 @@
     "moment": "^2.13.0",
     "postcss-loader": "^0.10.1",
     "rimraf": "^2.5.2",
-    "shelljs": "^0.7.4",
+    "shelljs": "^0.8.5",
     "style-loader": "^0.13.1",
     "superagent": "^2.0.0",
     "webpack": "^1.13.0",
