@@ -42,7 +42,7 @@
     "eslint": "^0.24.0",
     "eslint-plugin-babel": "^1.1.0",
     "extract-text-webpack-plugin": "^1.0.1",
-    "moment": "^2.13.0",
+    "moment": "^2.29.2",
     "postcss-loader": "^0.10.1",
     "rimraf": "^2.5.2",
     "shelljs": "^0.7.4",
