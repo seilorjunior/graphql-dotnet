@@ -1,14 +1,24 @@
-using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using GraphQL.Validation;
 
 namespace GraphQL
 {
-    public class Inputs : Dictionary<string, object>
+    /// <summary>
+    /// Represents a readonly dictionary of variable inputs to a document. Typically this
+    /// contains the deserialized 'variables' property from the GraphQL request. During document execution,
+    /// these inputs will be validated and coerced into a <see cref="Variables"/> dictionary.
+    /// </summary>
+    public class Inputs : ReadOnlyDictionary<string, object?>
     {
-        public Inputs()
-        {
-        }
+        /// <summary>
+        /// Returns an empty set of inputs.
+        /// </summary>
+        public static readonly Inputs Empty = new Inputs(new Dictionary<string, object?>());
 
-        public Inputs(IDictionary<string, object> dictionary)
+        /// <summary>
+        /// Initializes a new instance that is a wrapper for the specified dictionary of elements.
+        /// </summary>
+        public Inputs(IDictionary<string, object?> dictionary)
             : base(dictionary)
         {
         }

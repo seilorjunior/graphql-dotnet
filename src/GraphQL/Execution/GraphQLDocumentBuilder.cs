@@ -1,27 +1,58 @@
-using GraphQL.Language;
-using GraphQL.Language.AST;
 using GraphQLParser;
+using GraphQLParser.AST;
+using GraphQLParser.Exceptions;
 
 namespace GraphQL.Execution
 {
+    /// <summary>
+    /// <inheritdoc cref="IDocumentBuilder"/>
+    /// <br/><br/>
+    /// Default instance of <see cref="IDocumentBuilder"/>.
+    /// </summary>
     public class GraphQLDocumentBuilder : IDocumentBuilder
     {
-        private readonly Parser _parser;
+        /// <summary>
+        /// Specifies whether to ignore comments when parsing GraphQL document.
+        /// By default, all comments are ignored.
+        /// </summary>
+        public bool IgnoreComments { get; set; } = true;
 
-        public GraphQLDocumentBuilder()
+        /// <summary>
+        /// Specifies whether to ignore token locations when parsing GraphQL document.
+        /// By default, all token locations are taken into account.
+        /// </summary>
+        public bool IgnoreLocations { get; set; }
+
+        /// <summary>
+        /// Maximum allowed recursion depth during parsing.
+        /// Depth is calculated in terms of AST nodes.
+        /// <br/>
+        /// Defaults to 128 if not set.
+        /// Minimum value is 1.
+        /// </summary>
+        public int? MaxDepth { get; set; }
+
+        /// <inheritdoc/>
+        public GraphQLDocument Build(string body)
         {
-            var lexer = new Lexer();
-            _parser = new Parser(lexer);
+            try
+            {
+                return Parser.Parse(body, new ParserOptions { Ignore = CreateIgnoreOptions(), MaxDepth = MaxDepth });
+            }
+            catch (GraphQLSyntaxErrorException ex)
+            {
+                throw new SyntaxError(ex);
+            }
         }
 
-        public Document Build(string body)
+        private IgnoreOptions CreateIgnoreOptions()
         {
-            var source = new Source(body);
-            var result = _parser.Parse(source);
-
-            var document = CoreToVanillaConverter.Convert(body, result);
-            document.OriginalQuery = body;
-            return document;
+            var options = IgnoreOptions.None;
+            if (IgnoreComments)
+                options |= IgnoreOptions.Comments;
+            if (IgnoreLocations)
+                options |= IgnoreOptions.Locations;
+            return options;
         }
     }
 }

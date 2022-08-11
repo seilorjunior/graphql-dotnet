@@ -1,51 +1,37 @@
-﻿using System.Collections.Generic;
-using System.Linq;
-using GraphQL.Language.AST;
-using GraphQL.Types;
+using GraphQL.Validation.Errors;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// Argument values of correct type
+    /// Argument values of correct type:
     ///
     /// A GraphQL document is only valid if all field argument literal values are
     /// of the type expected by their position.
     /// </summary>
     public class ArgumentsOfCorrectType : IValidationRule
     {
-        public INodeVisitor Validate(ValidationContext context)
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly ArgumentsOfCorrectType Instance = new();
+
+        /// <inheritdoc/>
+        /// <exception cref="ArgumentsOfCorrectTypeError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(_nodeVisitor);
+
+        private static readonly INodeVisitor _nodeVisitor = new MatchingNodeVisitor<GraphQLArgument>((argAst, context) =>
         {
-            return new EnterLeaveListener(_ =>
+            var argDef = context.TypeInfo.GetArgument();
+            if (argDef == null)
+                return;
+
+            var type = argDef.ResolvedType!;
+            var errors = context.IsValidLiteralValue(type, argAst.Value);
+            if (errors != null)
             {
-                _.Match<Argument>(argAst =>
-                {
-                    var argDef = context.TypeInfo.GetArgument();
-                    if (argDef == null) return;
-
-                    var type = argDef.ResolvedType;
-                    var errors = type.IsValidLiteralValue(argAst.Value, context.Schema).ToList();
-                    if (errors.Any())
-                    {
-                        var error = new ValidationError(
-                            context.OriginalQuery,
-                            "5.3.3.1",
-                            BadValueMessage(argAst.Name, type, context.Print(argAst.Value), errors),
-                            argAst);
-                        context.ReportError(error);
-                    }
-                });
-            });
-        }
-
-        public string BadValueMessage(
-            string argName,
-            IGraphType type,
-            string value,
-            IEnumerable<string> verboseErrors)
-        {
-            var message = verboseErrors != null ? $"\n{string.Join("\n", verboseErrors)}" : "";
-
-            return $"Argument \"{argName}\" has invalid value {value}.{message}";
-        }
+                context.ReportError(new ArgumentsOfCorrectTypeError(context, argAst, errors));
+            }
+        });
     }
 }

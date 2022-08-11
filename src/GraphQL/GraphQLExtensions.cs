@@ -1,23 +1,26 @@
-using System;
 using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq.Expressions;
-using System.Reflection;
-using System.Text.RegularExpressions;
-using GraphQL.Language.AST;
 using GraphQL.Types;
-using GraphQL.Utilities;
+using GraphQLParser.AST;
+using GraphQLParser.Visitors;
 
 namespace GraphQL
 {
+    /// <summary>
+    /// Provides extension methods for working with graph types.
+    /// </summary>
     public static class GraphQLExtensions
     {
-        public static string TrimGraphQLTypes(this string name)
-        {
-            return Regex.Replace(name, "[\\[!\\]]", "").Trim();
-        }
+        /// <summary>
+        /// Determines if this graph type is an introspection type.
+        /// </summary>
+        internal static bool IsIntrospectionType(this IGraphType type) => type?.Name?.StartsWith("__", StringComparison.InvariantCulture) ?? false;
 
+        /// <summary>
+        /// Indicates if the graph type is a union, interface or object graph type.
+        /// </summary>
         public static bool IsCompositeType(this IGraphType type)
         {
             return type is IObjectGraphType ||
@@ -25,196 +28,248 @@ namespace GraphQL
                    type is UnionGraphType;
         }
 
+        /// <summary>
+        /// Indicates if the graph type is a scalar graph type.
+        /// </summary>
         public static bool IsLeafType(this IGraphType type)
         {
-            var namedType = type.GetNamedType();
-            return namedType is ScalarGraphType || namedType is EnumerationGraphType;
+            var (namedType, namedType2) = type.GetNamedTypes();
+            return namedType is ScalarGraphType ||
+                   typeof(ScalarGraphType).IsAssignableFrom(namedType2);
         }
 
+        // https://spec.graphql.org/October2021/#sec-Input-and-Output-Types
+        /// <summary>
+        /// Indicates if the type is an input graph type (scalar or input object).
+        /// </summary>
+        public static bool IsInputType(this Type type)
+        {
+            if (type.IsGenericType)
+            {
+                var genericDef = type.GetGenericTypeDefinition();
+
+                if (genericDef == typeof(GraphQLClrInputTypeReference<>))
+                    return true;
+
+                if (genericDef == typeof(GraphQLClrOutputTypeReference<>))
+                    return false;
+
+                if (genericDef == typeof(NonNullGraphType<>) || genericDef == typeof(ListGraphType<>))
+                    return type.GenericTypeArguments[0].IsInputType();
+            }
+
+            return typeof(ScalarGraphType).IsAssignableFrom(type) ||
+                   typeof(IInputObjectGraphType).IsAssignableFrom(type);
+        }
+
+        // https://spec.graphql.org/October2021/#sec-Input-and-Output-Types
+        /// <summary>
+        /// Indicates if the graph type is an input graph type (scalar or input object).
+        /// </summary>
         public static bool IsInputType(this IGraphType type)
         {
-            var namedType = type.GetNamedType();
+            var (namedType, namedType2) = type.GetNamedTypes();
             return namedType is ScalarGraphType ||
-                   namedType is EnumerationGraphType ||
-                   namedType is IInputObjectGraphType;
+                   namedType is IInputObjectGraphType ||
+                   typeof(ScalarGraphType).IsAssignableFrom(namedType2) ||
+                   typeof(IInputObjectGraphType).IsAssignableFrom(namedType2);
         }
 
+        // https://spec.graphql.org/October2021/#sec-Input-and-Output-Types
+        /// <summary>
+        /// Indicates if the type is an output graph type (scalar, object, interface or union).
+        /// </summary>
+        public static bool IsOutputType(this Type type)
+        {
+            if (type.IsGenericType)
+            {
+                var genericDef = type.GetGenericTypeDefinition();
+
+                if (genericDef == typeof(GraphQLClrInputTypeReference<>))
+                    return false;
+
+                if (genericDef == typeof(GraphQLClrOutputTypeReference<>))
+                    return true;
+
+                if (genericDef == typeof(NonNullGraphType<>) || genericDef == typeof(ListGraphType<>))
+                    return type.GenericTypeArguments[0].IsOutputType();
+            }
+
+            return typeof(ScalarGraphType).IsAssignableFrom(type) ||
+                   typeof(IObjectGraphType).IsAssignableFrom(type) ||
+                   typeof(IInterfaceGraphType).IsAssignableFrom(type) ||
+                   typeof(UnionGraphType).IsAssignableFrom(type);
+        }
+
+        // https://spec.graphql.org/October2021/#sec-Input-and-Output-Types
+        /// <summary>
+        /// Indicates if the graph type is an output graph type (scalar, object, interface or union).
+        /// </summary>
+        public static bool IsOutputType(this IGraphType type)
+        {
+            var (namedType, namedType2) = type.GetNamedTypes();
+            return namedType is ScalarGraphType ||
+                   namedType is IObjectGraphType ||
+                   namedType is IInterfaceGraphType ||
+                   namedType is UnionGraphType ||
+                   typeof(ScalarGraphType).IsAssignableFrom(namedType2) ||
+                   typeof(IObjectGraphType).IsAssignableFrom(namedType2) ||
+                   typeof(IInterfaceGraphType).IsAssignableFrom(namedType2) ||
+                   typeof(UnionGraphType).IsAssignableFrom(namedType2);
+            ;
+        }
+
+        /// <summary>
+        /// Indicates if the graph type is an input object graph type.
+        /// </summary>
+        public static bool IsInputObjectType(this IGraphType type)
+        {
+            var (namedType, namedType2) = type.GetNamedTypes();
+            return namedType is IInputObjectGraphType ||
+                   typeof(IInputObjectGraphType).IsAssignableFrom(namedType2);
+        }
+
+        internal static bool IsGraphQLTypeReference(this IGraphType? type)
+        {
+            var (namedType, _) = type.GetNamedTypes();
+            return namedType is GraphQLTypeReference;
+        }
+
+        internal static (IGraphType? resolvedType, Type? type) GetNamedTypes(this IGraphType? type)
+        {
+            return type switch
+            {
+                NonNullGraphType nonNull => nonNull.ResolvedType != null ? GetNamedTypes(nonNull.ResolvedType) : (null, GetNamedType(nonNull.Type!)),
+                ListGraphType list => list.ResolvedType != null ? GetNamedTypes(list.ResolvedType) : (null, GetNamedType(list.Type!)),
+                _ => (type, null)
+            };
+        }
+
+        /// <summary>
+        /// Unwraps any list/non-null graph type wrappers from a graph type and returns the base graph type.
+        /// </summary>
         public static IGraphType GetNamedType(this IGraphType type)
         {
-            IGraphType unmodifiedType = type;
+            if (type == null)
+                return null!;
 
-            if (type is NonNullGraphType)
-            {
-                var nonNull = (NonNullGraphType) type;
-                return GetNamedType(nonNull.ResolvedType);
-            }
-
-            if (type is ListGraphType)
-            {
-                var list = (ListGraphType) type;
-                return GetNamedType(list.ResolvedType);
-            }
-
-            return unmodifiedType;
+            var (namedType, _) = type.GetNamedTypes();
+            return namedType ?? throw new NotSupportedException("Please set ResolvedType property before calling this method or call GetNamedType(this Type type) instead");
         }
 
-        public static IGraphType BuildNamedType(this Type type, Func<Type, IGraphType> resolve = null)
-        {
-            if (resolve == null)
-            {
-                resolve = t => (IGraphType) Activator.CreateInstance(t);
-            }
-
-            if (type.GetTypeInfo().IsGenericType)
-            {
-                if (type.GetGenericTypeDefinition() == typeof(NonNullGraphType<>))
-                {
-                    var nonNull = (NonNullGraphType)Activator.CreateInstance(type);
-                    nonNull.ResolvedType = BuildNamedType(type.GenericTypeArguments[0], resolve);
-                    return nonNull;
-                }
-
-                if (type.GetGenericTypeDefinition() == typeof(ListGraphType<>))
-                {
-                    var list = (ListGraphType)Activator.CreateInstance(type);
-                    list.ResolvedType = BuildNamedType(type.GenericTypeArguments[0], resolve);
-                    return list;
-                }
-            }
-
-            return resolve(type) ??
-                   throw new InvalidOperationException(
-                       $"Expected non-null value, {nameof(resolve)} delegate return null for \"${type}\"");
-        }
-
+        /// <summary>
+        /// Unwraps any list/non-null graph type wrappers from a graph type and returns the base graph type.
+        /// </summary>
         public static Type GetNamedType(this Type type)
         {
-            if (type.GetTypeInfo().IsGenericType
-                && (type.GetGenericTypeDefinition() == typeof(NonNullGraphType<>) ||
-                    type.GetGenericTypeDefinition() == typeof(ListGraphType<>)))
-            {
-                return GetNamedType(type.GenericTypeArguments[0]);
-            }
+            if (!type.IsGenericType)
+                return type;
 
-            return type;
+            var genericDef = type.GetGenericTypeDefinition();
+            return genericDef == typeof(NonNullGraphType<>) || genericDef == typeof(ListGraphType<>)
+                ? GetNamedType(type.GenericTypeArguments[0])
+                : type;
         }
 
-        public static IEnumerable<string> IsValidLiteralValue(this IGraphType type, IValue valueAst, ISchema schema)
+        /// <summary>
+        /// An Interface defines a list of fields; Object types that implement that interface are guaranteed to implement those fields.
+        /// Whenever the type system claims it will return an interface, it will return a valid implementing type.
+        /// </summary>
+        /// <param name="iface">The interface graph type.</param>
+        /// <param name="type">The object graph type to verify it against.</param>
+        /// <param name="throwError"> Set to <c>true</c> to generate an error if the type does not match the interface. </param>
+        public static bool IsValidInterfaceFor(this IInterfaceGraphType iface, IObjectGraphType type, bool throwError = true)
         {
-            if (type is NonNullGraphType)
+            foreach (var field in iface.Fields)
             {
-                var nonNull = (NonNullGraphType) type;
-                var ofType = nonNull.ResolvedType;
+                var found = type.GetField(field.Name);
 
-                if (valueAst == null || valueAst is NullValue)
+                if (found == null)
                 {
-                    if (ofType != null)
-                    {
-                        return new[] { $"Expected \"{ofType.Name}!\", found null."};
-                    }
-
-                    return new[] { "Expected non-null value, found null"};
+                    return throwError ? throw new ArgumentException($"Type {type.GetType().GetFriendlyName()} with name '{type.Name}' does not implement interface {iface.GetType().GetFriendlyName()} with name '{iface.Name}'. It has no field '{field.Name}'.") : false;
                 }
 
-                return IsValidLiteralValue(ofType, valueAst, schema);
-            }
-            else if (valueAst is NullValue)
-            {
-                return new string[] { };
-            }
-
-
-            if (valueAst == null)
-            {
-                return new string[] {};
-            }
-
-            // This function only tests literals, and assumes variables will provide
-            // values of the correct type.
-            if (valueAst is VariableReference)
-            {
-                return new string[] {};
-            }
-
-            if (type is ListGraphType)
-            {
-                var list = (ListGraphType)type;
-                var ofType = list.ResolvedType;
-
-                if (valueAst is ListValue)
+                if (found.ResolvedType != null && field.ResolvedType != null && found.ResolvedType is not GraphQLTypeReference && field.ResolvedType is not GraphQLTypeReference)
                 {
-                    var index = 0;
-                    return ((ListValue) valueAst).Values.Aggregate(new string[] {}, (acc, value) =>
-                    {
-                        var errors = IsValidLiteralValue(ofType, value, schema);
-                        var result = acc.Concat(errors.Map(err => $"In element #{index}: {err}")).ToArray();
-                        index++;
-                        return result;
-                    });
+                    if (!IsSubtypeOf(found.ResolvedType, field.ResolvedType))
+                        return throwError ? throw new ArgumentException($"Type {type.GetType().GetFriendlyName()} with name '{type.Name}' does not implement interface {iface.GetType().GetFriendlyName()} with name '{iface.Name}'. Field '{field.Name}' must be of type '{field.ResolvedType}' or covariant from it, but in fact it is of type '{found.ResolvedType}'.") : false;
                 }
-
-                return IsValidLiteralValue(ofType, valueAst, schema);
             }
 
-            if (type is IInputObjectGraphType)
-            {
-                if (!(valueAst is ObjectValue))
-                {
-                    return new[] {$"Expected \"{type.Name}\", found not an object."};
-                }
-
-                var inputType = (IInputObjectGraphType) type;
-
-                var fields = inputType.Fields.ToList();
-                var fieldAsts = ((ObjectValue) valueAst).ObjectFields.ToList();
-
-                var errors = new List<string>();
-
-                // ensure every provided field is defined
-                fieldAsts.Apply(providedFieldAst =>
-                {
-                    var found = fields.FirstOrDefault(x => x.Name == providedFieldAst.Name);
-                    if (found == null)
-                    {
-                        errors.Add($"In field \"{providedFieldAst.Name}\": Unknown field.");
-                    }
-                });
-
-                // ensure every defined field is valid
-                fields.Apply(field =>
-                {
-                    var fieldAst = fieldAsts.FirstOrDefault(x => x.Name == field.Name);
-                    var result = IsValidLiteralValue(field.ResolvedType, fieldAst?.Value, schema);
-
-                    errors.AddRange(result.Map(err=> $"In field \"{field.Name}\": {err}"));
-                });
-
-                return errors;
-            }
-
-            var scalar = (ScalarGraphType) type;
-
-            var parseResult = scalar.ParseLiteral(valueAst);
-
-            if (parseResult == null)
-            {
-                return new [] {$"Expected type \"{type.Name}\", found {AstPrinter.Print(valueAst)}."};
-            }
-
-            return new string[] {};
+            return true;
         }
 
-        public static string NameOf<T, P>(this Expression<Func<T, P>> expression)
+        /// <summary>
+        /// Examines a simple lambda expression and returns the name of the member it references.
+        /// For instance, returns <c>Widget</c> given an expression of <c>x => x.Widget</c>.
+        /// Unable to parse any expressions that are more complex than a simple member access.
+        /// Throws an <see cref="InvalidCastException"/> if the expression is not a simple member access.
+        /// </summary>
+        public static string NameOf<TSourceType, TProperty>(this Expression<Func<TSourceType, TProperty>> expression)
         {
-            var member = (MemberExpression) expression.Body;
+            var member = (MemberExpression)expression.Body;
             return member.Member.Name;
         }
 
         /// <summary>
-        /// Provided a type and a super type, return true if the first type is either
+        /// Examines a simple lambda expression and returns the description of the member it
+        /// references as listed by a <see cref="DescriptionAttribute"/>.
+        /// Unable to parse any expressions that are more complex than a simple member access.
+        /// Returns <see langword="null"/> if the expression is not a simple member access.
+        /// </summary>
+        public static string? DescriptionOf<TSourceType, TProperty>(this Expression<Func<TSourceType, TProperty>> expression)
+        {
+            return expression.Body is MemberExpression expr
+                ? expr.Member.Description()
+                : null;
+        }
+
+        /// <summary>
+        /// Examines a simple lambda expression and returns the deprecation reason of the member it
+        /// references as listed by a <see cref="ObsoleteAttribute"/>.
+        /// Unable to parse any expressions that are more complex than a simple member access.
+        /// Returns <see langword="null"/> if the expression is not a simple member access.
+        /// </summary>
+        public static string? DeprecationReasonOf<TSourceType, TProperty>(this Expression<Func<TSourceType, TProperty>> expression)
+        {
+            return expression.Body is MemberExpression expr
+                ? expr.Member.ObsoleteMessage()
+                : null;
+        }
+
+        /// <summary>
+        /// Examines a simple lambda expression and returns the default value of the member it
+        /// references as listed by a <see cref="DefaultValueAttribute"/>.
+        /// Unable to parse any expressions that are more complex than a simple member access.
+        /// Returns <see langword="null"/> if the expression is not a simple member access.
+        /// </summary>
+        public static object? DefaultValueOf<TSourceType, TProperty>(this Expression<Func<TSourceType, TProperty>> expression)
+        {
+            return expression.Body is MemberExpression expr
+                ? expr.Member.DefaultValue()
+                : null;
+        }
+
+        /// <summary>
+        /// Adds a key-value metadata pair to the specified provider.
+        /// </summary>
+        /// <typeparam name="TMetadataProvider"> The type of metadata provider. Generics are used here to let compiler infer the returning type to allow methods chaining. </typeparam>
+        /// <param name="provider"> Metadata provider which must implement <see cref="IProvideMetadata"/> interface. </param>
+        /// <param name="key"> String key. </param>
+        /// <param name="value"> Arbitrary value. </param>
+        /// <returns> The reference to the specified <paramref name="provider"/>. </returns>
+        public static TMetadataProvider WithMetadata<TMetadataProvider>(this TMetadataProvider provider, string key, object? value)
+            where TMetadataProvider : IProvideMetadata
+        {
+            provider.Metadata[key] = value;
+            return provider;
+        }
+
+        /// <summary>
+        /// Provided a type and a super type, return <see langword="true"/> if the first type is either
         /// equal or a subset of the second super type (covariant).
         /// </summary>
-        public static bool IsSubtypeOf(this IGraphType maybeSubType, IGraphType superType, ISchema schema)
+        public static bool IsSubtypeOf(this IGraphType maybeSubType, IGraphType superType)
         {
             if (maybeSubType.Equals(superType))
             {
@@ -222,31 +277,26 @@ namespace GraphQL
             }
 
             // If superType is non-null, maybeSubType must also be nullable.
-            if (superType is NonNullGraphType)
+            if (superType is NonNullGraphType sup1)
             {
-                if (maybeSubType is NonNullGraphType)
+                if (maybeSubType is NonNullGraphType sub)
                 {
-                    var sub = (NonNullGraphType) maybeSubType;
-                    var sup = (NonNullGraphType) superType;
-                    return IsSubtypeOf(sub.ResolvedType, sup.ResolvedType, schema);
+                    return IsSubtypeOf(sub.ResolvedType!, sup1.ResolvedType!);
                 }
 
                 return false;
             }
-            else if (maybeSubType is NonNullGraphType)
+            else if (maybeSubType is NonNullGraphType sub)
             {
-                var sub = (NonNullGraphType) maybeSubType;
-                return IsSubtypeOf(sub.ResolvedType, superType, schema);
+                return IsSubtypeOf(sub.ResolvedType!, superType);
             }
 
             // If superType type is a list, maybeSubType type must also be a list.
-            if (superType is ListGraphType)
+            if (superType is ListGraphType sup)
             {
-                if (maybeSubType is ListGraphType)
+                if (maybeSubType is ListGraphType sub)
                 {
-                    var sub = (ListGraphType) maybeSubType;
-                    var sup = (ListGraphType) superType;
-                    return IsSubtypeOf(sub.ResolvedType, sup.ResolvedType, schema);
+                    return IsSubtypeOf(sub.ResolvedType!, sup.ResolvedType!);
                 }
 
                 return false;
@@ -259,10 +309,9 @@ namespace GraphQL
 
             // If superType type is an abstract type, maybeSubType type may be a currently
             // possible object type.
-            if (superType is IAbstractGraphType &&
-                maybeSubType is IObjectGraphType)
+            if (superType is IAbstractGraphType type && maybeSubType is IObjectGraphType)
             {
-                return ((IAbstractGraphType) superType).IsPossibleType(maybeSubType);
+                return type.IsPossibleType(maybeSubType);
             }
 
             return false;
@@ -277,21 +326,27 @@ namespace GraphQL
         ///
         /// This function is commutative.
         /// </summary>
-        public static bool DoTypesOverlap(this ISchema schema, IGraphType typeA, IGraphType typeB)
+        public static bool DoTypesOverlap(IGraphType typeA, IGraphType typeB)
         {
             if (typeA.Equals(typeB))
             {
                 return true;
             }
 
-            var a = typeA as IAbstractGraphType;
             var b = typeB as IAbstractGraphType;
 
-            if (a != null)
+            if (typeA is IAbstractGraphType a)
             {
                 if (b != null)
                 {
-                    return a.PossibleTypes.Any(type => b.IsPossibleType(type));
+                    // DO NOT USE LINQ ON HOT PATH
+                    foreach (var type in a.PossibleTypes.List)
+                    {
+                        if (b.IsPossibleType(type))
+                            return true;
+                    }
+
+                    return false;
                 }
 
                 return a.IsPossibleType(typeB);
@@ -305,123 +360,266 @@ namespace GraphQL
             return false;
         }
 
-        public static IValue AstFromValue(this object value, ISchema schema, IGraphType type)
+        /// <summary>
+        /// Returns a value indicating whether the provided value is a valid default value
+        /// for the specified input graph type.
+        /// </summary>
+        public static bool IsValidDefault(this IGraphType type, object? value)
         {
-            if (type is NonNullGraphType)
+            if (type == null)
+                throw new ArgumentNullException(nameof(type));
+
+            if (type is NonNullGraphType nonNullGraphType)
             {
-                var nonnull = (NonNullGraphType)type;
-                return AstFromValue(value, schema, nonnull.ResolvedType);
+                return value != null && nonNullGraphType.ResolvedType!.IsValidDefault(value);
             }
 
-            if (value == null || type == null)
+            if (value == null)
             {
-                return new NullValue();
+                return true;
             }
 
             // Convert IEnumerable to GraphQL list. If the GraphQLType is a list, but
             // the value is not an IEnumerable, convert the value using the list's item type.
-            if (type is ListGraphType)
+            if (type is ListGraphType listType)
             {
-                var listType = (ListGraphType) type;
-                var itemType = listType.ResolvedType;
+                var itemType = listType.ResolvedType!;
 
-                if (!(value is string) && value is IEnumerable)
+                if (value is not string && value is IEnumerable list)
                 {
-                    var list = (IEnumerable)value;
-                    var values = list.Map(item => AstFromValue(item, schema, itemType));
-                    return new ListValue(values);
+                    foreach (var item in list)
+                    {
+                        if (!IsValidDefault(itemType, item))
+                            return false;
+                    }
+                    return true;
+                }
+                else
+                {
+                    return IsValidDefault(itemType, value);
+                }
+            }
+
+            if (type is IInputObjectGraphType inputObjectGraphType)
+            {
+                return inputObjectGraphType.IsValidDefault(value);
+            }
+
+            if (type is ScalarGraphType scalar)
+                return scalar.IsValidDefault(value);
+
+            throw new ArgumentOutOfRangeException(nameof(type), $"Must provide Input Type, cannot use {type.GetType().Name} '{type}'");
+        }
+
+        /// <summary>
+        /// Attempts to serialize a value into an AST representation for a specified graph type.
+        /// May throw exceptions during the serialization process.
+        /// </summary>
+        public static GraphQLValue ToAST(this IGraphType type, object? value)
+        {
+            if (type == null)
+                throw new ArgumentNullException(nameof(type));
+
+            if (type is NonNullGraphType nonnull)
+            {
+                var astValue = ToAST(nonnull.ResolvedType!, value);
+
+                if (astValue is GraphQLNullValue)
+                    throw new InvalidOperationException($"Unable to get an AST representation of {(value == null ? "null" : $"'{value}'")} value for type '{nonnull}'.");
+
+                return astValue;
+            }
+
+            if (type is ScalarGraphType scalar)
+            {
+                return scalar.ToAST(value) ?? scalar.ThrowASTConversionError(value);
+            }
+
+            if (value == null)
+            {
+                return GraphQLValuesCache.Null;
+            }
+
+            // Convert IEnumerable to GraphQL list. If the GraphQLType is a list, but
+            // the value is not an IEnumerable, convert the value using the list's item type.
+            if (type is ListGraphType listType)
+            {
+                var itemType = listType.ResolvedType!;
+
+                if (value is not string && value is IEnumerable list)
+                {
+                    var values = list
+                        .Cast<object>()
+                        .Select(item => ToAST(itemType, item))
+                        .ToList();
+
+                    return new GraphQLListValue { Values = values };
                 }
 
-                return AstFromValue(value, schema, itemType);
+                return ToAST(itemType, value);
             }
 
             // Populate the fields of the input object by creating ASTs from each value
             // in the dictionary according to the fields in the input type.
-            if (type is IInputObjectGraphType)
+            if (type is IInputObjectGraphType input)
             {
-                if (!(value is Dictionary<string, object>))
+                return input.ToAST(value) ?? throw new InvalidOperationException($"Unable to get an AST representation of the input object type '{input.Name}' for '{value}'.");
+            }
+
+            throw new ArgumentOutOfRangeException(nameof(type), $"Must provide Input Type, cannot use {type.GetType().Name} '{type}'");
+        }
+
+        internal static string? MergeComments(this ASTNode node)
+        {
+            string? merged = null;
+            if (node.Comments?.Count > 0)
+            {
+                //TODO: rewrite this when migrating from comments to descriptions
+                for (int i = 0; i < node.Comments!.Count; ++i)
                 {
-                    return null;
+                    merged += node.Comments[i].Value;
+                    if (i < node.Comments.Count - 1)
+                        merged += Environment.NewLine;
                 }
-
-                var input = (IInputObjectGraphType) type;
-                var dict = (Dictionary<string, object>)value;
-
-                var fields = dict
-                    .Select(pair =>
-                    {
-                        var field = input.Fields.FirstOrDefault(x => x.Name == pair.Key);
-                        var fieldType = field?.ResolvedType;
-                        return new ObjectField(pair.Key, AstFromValue(pair.Value, schema, fieldType));
-                    })
-                    .ToList();
-
-                return new ObjectValue(fields);
             }
+            return merged;
+        }
 
-
-            Invariant.Check(
-                type.IsInputType(),
-                $"Must provide Input Type, cannot use: {type}");
-
-
-            var inputType = type as ScalarGraphType;
-
-            // Since value is an internally represented value, it must be serialized
-            // to an externally represented value before converting into an AST.
-            var serialized = inputType.Serialize(value);
-            if (serialized == null)
+        // optimized version of Print(this ASTNode node) for primitive values
+        internal static string Print(this IGraphType type, object value)
+        {
+            return (type, value) switch
             {
-                return null;
-            }
+                (StringGraphType, string s) when s.IndexOfAny(_escapes) == -1 => "\"" + s + "\"",
+                (BooleanGraphType, false) => "false",
+                (BooleanGraphType, true) => "true",
+                _ => type.ToAST(value).Print(),
+            };
+        }
 
-            if (serialized is bool)
+        private static readonly char[] _escapes = new char[] { '\b', '\f', '\n', '\r', '\t', '\\', '"' };
+
+        /// <summary>
+        /// Returns a string representation of the specified node.
+        /// </summary>
+        internal static string Print(this ASTNode node)
+        {
+            using var writer = new StringWriter();
+            _sdlPrinter.PrintAsync(node, writer).GetAwaiter().GetResult(); // actually is sync
+            return writer.ToString()!;
+        }
+
+        private static readonly SDLPrinter _sdlPrinter = new();
+
+        internal static object? ParseAnyLiteral(this GraphQLValue value) => value switch
+        {
+            GraphQLObjectValue v => ParseObject(v),
+            GraphQLListValue v => ParseList(v),
+            GraphQLIntValue v => ParseInt(v),
+            GraphQLFloatValue v => ParseFloat(v),
+            GraphQLStringValue v => v.Value.Length == 0 ? string.Empty : (string)v.Value,
+            GraphQLBooleanValue v => (v.Value == "true").Boxed(),
+            GraphQLEnumValue e => e.Name.StringValue, //TODO:think about it later if/when refactoring federation
+            GraphQLNullValue _ => null,
+            _ => ThrowLiteralConversionError(value)
+        };
+
+        private static readonly ReadOnlyDictionary<string, object?> _empty = new(new Dictionary<string, object?>());
+
+        private static IDictionary<string, object?> ParseObject(GraphQLObjectValue v)
+        {
+            if (v.Fields == null || v.Fields.Count == 0)
             {
-                return new BooleanValue((bool)serialized);
+                return _empty;
             }
-
-            if (serialized is int)
+            else
             {
-                return new IntValue((int)serialized);
+                var @object = new Dictionary<string, object?>(v.Fields.Count);
+                foreach (var field in v.Fields)
+                    @object.Add(field.Name.StringValue, ParseAnyLiteral(field.Value));
+                return @object;
             }
+        }
 
-            if (serialized is long)
+        private static IList<object?> ParseList(GraphQLListValue v)
+        {
+            if (v.Values == null || v.Values.Count == 0)
             {
-                return new LongValue((long)serialized);
+                return Array.Empty<object?>();
             }
-
-            if (serialized is decimal)
+            else
             {
-                return new DecimalValue((decimal)serialized);
+                var array = new object?[v.Values.Count];
+                for (int i = 0; i < v.Values.Count; ++i)
+                    array[i] = ParseAnyLiteral(v.Values[i]);
+                return array;
             }
+        }
 
-            if (serialized is double)
+        private static object ParseInt(GraphQLIntValue v)
+        {
+            if (v.Value.Length == 0)
+                throw new InvalidOperationException("Invalid number (empty string)");
+
+            if (Int.TryParse(v.Value, out int intResult))
             {
-                return new FloatValue((double)serialized);
+                return intResult;
             }
 
-            if (serialized is DateTime)
+            // If the value doesn't fit in an integer, revert to using long...
+            if (Long.TryParse(v.Value, out long longResult))
             {
-                return new DateTimeValue((DateTime)serialized);
+                return longResult;
             }
 
-            if (serialized is string)
+            // If the value doesn't fit in an long, revert to using decimal...
+            if (Decimal.TryParse(v.Value, out decimal decimalResult))
             {
-                if (type is EnumerationGraphType)
-                {
-                    return new EnumValue(serialized.ToString());
-                }
-
-                return new StringValue(serialized.ToString());
+                return decimalResult;
             }
 
-            var converter = schema.FindValueConverter(serialized, type);
-            if (converter != null)
+            // If the value doesn't fit in an decimal, revert to using BigInteger...
+            if (BigInt.TryParse(v.Value, out var bigIntegerResult))
             {
-                return converter.Convert(serialized, type);
+                return bigIntegerResult;
             }
 
-            throw new ExecutionError($"Cannot convert value to AST: {serialized}");
+            // Since BigInteger can contain any valid integer (arbitrarily large), this is impossible to trigger via an invalid query
+            throw new InvalidOperationException($"Invalid number {v.Value}");
+        }
+
+        private static object ParseFloat(GraphQLFloatValue v)
+        {
+            if (v.Value.Length == 0)
+                throw new InvalidOperationException("Invalid number (empty string)");
+
+            // the idea is to see if there is a loss of accuracy of value
+            // for example, 12.1 or 12.11 is double but 12.10 is decimal
+            if (!Double.TryParse(v.Value, out double dbl))
+            {
+                ThrowLiteralConversionError(v);
+            }
+
+            //it is possible for a FloatValue to overflow a decimal; however, with a double, it just returns Infinity or -Infinity
+            if (Decimal.TryParse(v.Value, out decimal dec))
+            {
+                // Cast the decimal to our struct to avoid the decimal.GetBits allocations.
+                var decBits = System.Runtime.CompilerServices.Unsafe.As<decimal, DecimalData>(ref dec);
+                decimal temp = new(dbl);
+                var dblAsDecBits = System.Runtime.CompilerServices.Unsafe.As<decimal, DecimalData>(ref temp);
+                if (!decBits.Equals(dblAsDecBits))
+                    return dec;
+            }
+
+            return dbl;
+        }
+
+        private static object ThrowLiteralConversionError(GraphQLValue input, string? description = null)
+        {
+            var value = input is IHasValueNode node ? node.Value.ToString() : input?.ToString();
+            if (description != null)
+                description = "; " + description;
+            throw new InvalidOperationException($"Unable to convert '{value}' literal from AST representation to any possible type{description}");
         }
     }
 }

@@ -1,55 +1,42 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using GraphQL.Resolvers;
-using GraphQL.Types;
 
 namespace GraphQL.Instrumentation
 {
-    public interface IFieldMiddlewareBuilder
-    {
-        IFieldMiddlewareBuilder Use(Func<FieldMiddlewareDelegate, FieldMiddlewareDelegate> middleware);
-        FieldMiddlewareDelegate Build(FieldMiddlewareDelegate start = null);
-        void ApplyTo(ISchema schema);
-    }
-
+    /// <summary>
+    /// Default implementation of <see cref="IFieldMiddlewareBuilder"/>.
+    /// </summary>
     public class FieldMiddlewareBuilder : IFieldMiddlewareBuilder
     {
-        private readonly IList<Func<FieldMiddlewareDelegate, FieldMiddlewareDelegate>> _components = new List<Func<FieldMiddlewareDelegate, FieldMiddlewareDelegate>>();
+        private Func<FieldMiddlewareDelegate, FieldMiddlewareDelegate>? _middleware;
 
+        /// <inheritdoc/>
         public IFieldMiddlewareBuilder Use(Func<FieldMiddlewareDelegate, FieldMiddlewareDelegate> middleware)
         {
-            _components.Add(middleware);
+            if (middleware == null)
+                throw new ArgumentNullException(nameof(middleware));
+
+            if (_middleware == null)
+            {
+                _middleware = middleware;
+            }
+            else
+            {
+                var firstMiddleware = _middleware;
+                _middleware = next => firstMiddleware(middleware(next));
+            }
+
             return this;
         }
 
-        public FieldMiddlewareDelegate Build(FieldMiddlewareDelegate start = null)
+        private static readonly FieldMiddlewareDelegate _defaultDelegate = context => NameFieldResolver.Instance.ResolveAsync(context);
+
+        /// <inheritdoc/>
+        public Func<FieldMiddlewareDelegate, FieldMiddlewareDelegate>? Build()
         {
-            var app = start ?? (context => Task.FromResult(new NameFieldResolver().Resolve(context)));
+            if (_middleware == null)
+                return null;
 
-            foreach (var component in _components.Reverse())
-            {
-                app = component(app);
-            }
-
-            return app;
-        }
-
-        public void ApplyTo(ISchema schema)
-        {
-            schema.AllTypes.Apply(item =>
-            {
-                var complex = item as IComplexGraphType;
-                complex?.Fields.Apply(field =>
-                {
-                    var resolver = new MiddlewareResolver(field.Resolver);
-
-                    FieldMiddlewareDelegate app = Build(resolver.Resolve);
-
-                    field.Resolver = new FuncFieldResolver<object>(app.Invoke);
-                });
-            });
+            return start => _middleware(start ?? _defaultDelegate);
         }
     }
 }

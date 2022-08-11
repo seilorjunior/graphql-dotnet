@@ -1,53 +1,49 @@
-﻿using System.Collections.Generic;
-using GraphQL.Language.AST;
+using GraphQL.Validation.Errors;
+using GraphQLParser;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// No unused fragments
-    /// 
+    /// No unused fragments:
+    ///
     /// A GraphQL document is only valid if all fragment definitions are spread
-    /// within operations, or spread within other fragments spread within operations.
+    /// within operations, or spread within other fragment spreads within operations.
     /// </summary>
     public class NoUnusedFragments : IValidationRule
-  {
-    public string UnusedFragMessage(string fragName)
     {
-      return $"Fragment \"{fragName}\" is never used.";
-    }
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly NoUnusedFragments Instance = new();
 
-    public INodeVisitor Validate(ValidationContext context)
-    {
-      var operationDefs = new List<Operation>();
-      var fragmentDefs = new List<FragmentDefinition>();
+        /// <inheritdoc/>
+        /// <exception cref="NoUnusedFragmentsError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(context.Document.FragmentsCount() > 0 ? _nodeVisitor : null);
 
-      return new EnterLeaveListener(_ =>
-      {
-        _.Match<Operation>(node => operationDefs.Add(node));
-        _.Match<FragmentDefinition>(node => fragmentDefs.Add(node));
-        _.Match<Document>(
-          leave: document =>
-          {
-            var fragmentNameUsed = new List<string>();
-            operationDefs.Apply(operation =>
+        private static readonly INodeVisitor _nodeVisitor = new NodeVisitors(
+            new MatchingNodeVisitor<GraphQLOperationDefinition>((node, context) => (context.TypeInfo.NoUnusedFragments_OperationDefs ??= new(1)).Add(node)),
+            new MatchingNodeVisitor<GraphQLFragmentDefinition>((node, context) => (context.TypeInfo.NoUnusedFragments_FragmentDefs ??= new()).Add(node)),
+            new MatchingNodeVisitor<GraphQLDocument>(leave: (document, context) =>
             {
-              context.GetRecursivelyReferencedFragments(operation).Apply(fragment =>
-              {
-                fragmentNameUsed.Add(fragment.Name);
-              });
-            });
+                var fragmentDefs = context.TypeInfo.NoUnusedFragments_FragmentDefs;
+                if (fragmentDefs == null)
+                    return;
 
-            fragmentDefs.Apply(fragmentDef =>
-            {
-              var fragName = fragmentDef.Name;
-              if (!fragmentNameUsed.Contains(fragName))
-              {
-                var error = new ValidationError(context.OriginalQuery, "5.4.1.4", UnusedFragMessage(fragName), fragmentDef);
-                context.ReportError(error);
-              }
-            });
-          });
-      });
+                var operationDefs = context.TypeInfo.NoUnusedFragments_OperationDefs;
+                if (operationDefs == null)
+                    return;
+
+                var fragmentsUsed = context.GetRecursivelyReferencedFragments(operationDefs);
+
+                foreach (var fragmentDef in fragmentDefs)
+                {
+                    if (fragmentsUsed == null || !fragmentsUsed.Contains(fragmentDef))
+                    {
+                        context.ReportError(new NoUnusedFragmentsError(context, fragmentDef));
+                    }
+                }
+            })
+        );
     }
-  }
 }

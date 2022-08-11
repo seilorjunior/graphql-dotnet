@@ -1,5 +1,3 @@
-using System;
-using System.Linq;
 using System.Reflection;
 
 namespace GraphQL.Reflection
@@ -7,24 +5,31 @@ namespace GraphQL.Reflection
     internal static class ReflectionHelper
     {
         /// <summary>
-        /// Creates an Accessor for the indicated GraphQL field
+        /// Creates an <see cref="IAccessor"/> for the indicated GraphQL field
         /// </summary>
         /// <param name="type">The type to check.</param>
         /// <param name="field">The desired field.</param>
-        public static IAccessor ToAccessor(this Type type, string field)
+        /// <param name="resolverType">defaults to Resolver</param>
+        public static IAccessor? ToAccessor(this Type? type, string field, ResolverType resolverType)
         {
-            if(type == null) return null;
+            if (type == null)
+                return null;
 
-            var methodInfo = type.MethodForField(field);
-            if(methodInfo != null)
+            var methodInfo = type.MethodForField(field, resolverType);
+            if (methodInfo != null)
             {
-                return new SingleMethodAccessor(methodInfo);
+                return new SingleMethodAccessor(type, methodInfo);
+            }
+
+            if (resolverType != ResolverType.Resolver)
+            {
+                return null;
             }
 
             var propertyInfo = type.PropertyForField(field);
-            if(propertyInfo != null)
+            if (propertyInfo != null)
             {
-                return new SinglePropertyAccessor(propertyInfo);
+                return new SinglePropertyAccessor(type, propertyInfo);
             }
 
             return null;
@@ -35,7 +40,8 @@ namespace GraphQL.Reflection
         /// </summary>
         /// <param name="type">The type to check.</param>
         /// <param name="field">The desired field.</param>
-        public static MethodInfo MethodForField(this Type type, string field)
+        /// <param name="resolverType">Indicates if a resolver or stream resolver method is requested.</param>
+        public static MethodInfo? MethodForField(this Type type, string field, ResolverType resolverType)
         {
             var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance);
 
@@ -43,7 +49,7 @@ namespace GraphQL.Reflection
             {
                 var attr = m.GetCustomAttribute<GraphQLMetadataAttribute>();
                 var name = attr?.Name ?? m.Name;
-                return string.Equals(field, name, StringComparison.OrdinalIgnoreCase);
+                return string.Equals(field, name, StringComparison.OrdinalIgnoreCase) && resolverType == (attr?.ResolverType ?? ResolverType.Resolver);
             });
 
             return method;
@@ -54,7 +60,7 @@ namespace GraphQL.Reflection
         /// </summary>
         /// <param name="type">The type to check.</param>
         /// <param name="field">The desired field.</param>
-        public static PropertyInfo PropertyForField(this Type type, string field)
+        public static PropertyInfo? PropertyForField(this Type type, string field)
         {
             var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
 

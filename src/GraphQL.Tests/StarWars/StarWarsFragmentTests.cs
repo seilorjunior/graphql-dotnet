@@ -1,13 +1,15 @@
-using Xunit;
+using GraphQL.Validation;
+using GraphQL.Validation.Errors;
+using GraphQLParser;
 
-namespace GraphQL.Tests.StarWars
+namespace GraphQL.Tests.StarWars;
+
+public class StarWarsFragmentTests : StarWarsTestBase
 {
-    public class StarWarsFragmentTests : StarWarsTestBase
+    [Fact]
+    public void use_fragment_spread_to_avoid_duplicate_content()
     {
-        [Fact]
-        public void use_fragment_spread_to_avoid_duplicate_content()
-        {
-            var query = @"
+        var query = @"
                query SomeDroids {
                   r2d2: droid(id: ""3"") {
                     ...DroidFragment
@@ -22,22 +24,22 @@ namespace GraphQL.Tests.StarWars
                }
             ";
 
-            var expected = @"{
-              'r2d2': {
-                name: 'R2-D2'
+        var expected = @"{
+              ""r2d2"": {
+                ""name"": ""R2-D2""
               },
-              'c3po': {
-                name: 'C-3PO'
+              ""c3po"": {
+                ""name"": ""C-3PO""
               }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void use_inline_fragment_on_interface()
-        {
-            var query = @"
+    [Fact]
+    public void use_inline_fragment_on_interface()
+    {
+        var query = @"
                query SomeDroids {
                   r2d2: droid(id: ""3"") {
                     ... on Character {
@@ -47,19 +49,19 @@ namespace GraphQL.Tests.StarWars
                }
             ";
 
-            var expected = @"{
-              'r2d2': {
-                name: 'R2-D2'
-              },
+        var expected = @"{
+              ""r2d2"": {
+                ""name"": ""R2-D2""
+              }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void use_unnamed_inline_fragment_on_interface()
-        {
-            var query = @"
+    [Fact]
+    public void use_unnamed_inline_fragment_on_interface()
+    {
+        var query = @"
                query SomeDroids {
                   r2d2: droid(id: ""3"") {
                     ... {
@@ -69,19 +71,19 @@ namespace GraphQL.Tests.StarWars
                }
             ";
 
-            var expected = @"{
-              'r2d2': {
-                name: 'R2-D2'
-              },
+        var expected = @"{
+              ""r2d2"": {
+                ""name"": ""R2-D2""
+              }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void use_undefined_fragment()
-        {
-            var query = @"
+    [Fact]
+    public void use_undefined_fragment()
+    {
+        var query = @"
                 query someDroids {
                     r2d2: droid(id: ""3"") {
                         ...unknown_fragment
@@ -89,12 +91,14 @@ namespace GraphQL.Tests.StarWars
                     }
                }
             ";
-            var errors = new ExecutionErrors();
-            var error = new ExecutionError(@"Unknown fragment ""unknown_fragment"".");
-            error.AddLocation(4, 25);
-            errors.Add(error);
+        var errors = new ExecutionErrors();
+        var error = new ValidationError(query, KnownFragmentNamesError.NUMBER, "Unknown fragment 'unknown_fragment'.")
+        {
+            Code = "KNOWN_FRAGMENT_NAMES"
+        };
+        error.AddLocation(new Location(4, 25));
+        errors.Add(error);
 
-            AssertQuery(query, CreateQueryResult(null, errors), null, null);
-        }
+        AssertQuery(query, CreateQueryResult(null, errors, executed: false), null, null);
     }
 }

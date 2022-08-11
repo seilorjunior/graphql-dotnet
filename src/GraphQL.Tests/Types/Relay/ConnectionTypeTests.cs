@@ -1,18 +1,23 @@
-﻿using GraphQL.Types;
+using GraphQL.Types;
 using GraphQL.Types.Relay;
-using Shouldly;
-using Xunit;
 
-namespace GraphQL.Tests.Types.Relay
+namespace GraphQL.Tests.Types.Relay;
+
+public class ConnectionTypeTests
 {
-    public class ConnectionTypeTests
+    [Fact]
+    public void should_derive_name()
     {
-        private ConnectionType<ObjectGraphType> type = new ConnectionType<ObjectGraphType>();
+        var type = new ConnectionType<ObjectGraphType>();
 
-        [Fact]
-        public void should_derive_name()
-        {
-            type.Name.ShouldBe("ObjectConnection");
-        }
+        type.Name.ShouldBe("ObjectConnection");
+    }
+
+    [Fact]
+    public void should_derive_name_for_non_null()
+    {
+        var type = new ConnectionType<NonNullGraphType<ObjectGraphType>>();
+
+        type.Name.ShouldBe("ObjectConnection");
     }
 }

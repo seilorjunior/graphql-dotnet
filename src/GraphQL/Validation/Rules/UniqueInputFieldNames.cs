@@ -1,56 +1,50 @@
-﻿using System;
-using System.Collections.Generic;
-using GraphQL.Language.AST;
+using GraphQL.Validation.Errors;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// Unique input field names
+    /// Unique input field names:
     ///
     /// A GraphQL input object value is only valid if all supplied fields are
     /// uniquely named.
     /// </summary>
     public class UniqueInputFieldNames : IValidationRule
     {
-        public Func<string, string> DuplicateInputField =
-            fieldName => $"There can be only one input field named {fieldName}.";
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly UniqueInputFieldNames Instance = new();
 
-        public INodeVisitor Validate(ValidationContext context)
-        {
-            var knownNameStack = new Stack<Dictionary<string, IValue>>();
-            var knownNames = new Dictionary<string, IValue>();
+        /// <inheritdoc/>
+        /// <exception cref="UniqueInputFieldNamesError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(_nodeVisitor);
 
-            return new EnterLeaveListener(_ =>
-            {
-                _.Match<ObjectValue>(
-                    enter: objVal =>
+        private static readonly INodeVisitor _nodeVisitor = new NodeVisitors(
+                new MatchingNodeVisitor<GraphQLObjectValue>(
+                    enter: (objVal, context) =>
                     {
-                        knownNameStack.Push(knownNames);
-                        knownNames = new Dictionary<string, IValue>();
+                        var knownNameStack = context.TypeInfo.UniqueInputFieldNames_KnownNameStack ??= new();
+
+                        knownNameStack.Push(context.TypeInfo.UniqueInputFieldNames_KnownNames!);
+                        context.TypeInfo.UniqueInputFieldNames_KnownNames = null;
                     },
-                    leave: objVal =>
-                    {
-                        knownNames = knownNameStack.Pop();
-                    });
+                    leave: (objVal, context) => context.TypeInfo.UniqueInputFieldNames_KnownNames = context.TypeInfo.UniqueInputFieldNames_KnownNameStack!.Pop()),
 
-                _.Match<ObjectField>(
-                    leave: objField =>
+                new MatchingNodeVisitor<GraphQLObjectField>(
+                    leave: (objField, context) =>
                     {
-                        if (knownNames.ContainsKey(objField.Name))
+                        var knownNames = context.TypeInfo.UniqueInputFieldNames_KnownNames ??= new();
+
+                        if (knownNames.TryGetValue(objField.Name, out var value))
                         {
-                            context.ReportError(new ValidationError(
-                                context.OriginalQuery,
-                                "5.5.1",
-                                DuplicateInputField(objField.Name),
-                                knownNames[objField.Name],
-                                objField.Value));
+                            context.ReportError(new UniqueInputFieldNamesError(context, value, objField));
                         }
                         else
                         {
                             knownNames[objField.Name] = objField.Value;
                         }
-                    });
-            });
-        }
+                    })
+            );
     }
 }

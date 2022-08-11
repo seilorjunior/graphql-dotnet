@@ -1,124 +1,23 @@
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-
 namespace GraphQL
 {
+    /// <summary>
+    /// Provides extension methods for strings.
+    /// </summary>
     public static class StringExtensions
     {
-        /// <summary>
-        /// Determines whether the specified string is empty.
-        /// </summary>
-        /// <param name="str">The string.</param>
-        /// <returns><c>true</c> if the specified string is empty; otherwise, <c>false</c>.</returns>
-        public static bool IsEmpty(this string str)
-        {
-            return string.IsNullOrEmpty(str);
-        }
-
-        /// <summary>
-        /// Splits a string on commas (,)
-        /// </summary>
-        /// <param name="content">The string to split.</param>
-        public static string[] ToDelimitedArray(this string content)
-        {
-            return content.ToDelimitedArray(',');
-        }
-
-        /// <summary>
-        /// Splits a string on the indicated character.
-        /// </summary>
-        /// <param name="content">The string to split.</param>
-        /// <param name="delimiter">The delimiter.</param>
-        public static string[] ToDelimitedArray(this string content, char delimiter)
-        {
-            var array = content.Split(delimiter);
-            for (var i = 0; i < array.Length; i++)
-            {
-                array[i] = array[i].Trim();
-            }
-
-            return array;
-        }
-
-        /// <summary>
-        /// Equivalent to String.GetEnumerator.
-        /// </summary>
-        /// <param name="this">The this.</param>
-        public static IEnumerable<char> ToEnumerable(this string @this)
-        {
-            if (@this == null) throw new ArgumentNullException("@this");
-
-            for (var i = 0; i < @this.Length; ++i)
-            {
-                yield return @this[i];
-            }
-        }
-
-        /// <summary>
-        /// Converts an enumeration of Char into a string.
-        /// </summary>
-        /// <param name="chars">The chars.</param>
-        /// <returns>System.String.</returns>
-        public static string ToStr(this IEnumerable<char> chars)
-        {
-            return new string(chars.ToArray());
-        }
-
         /// <summary>
         /// Equivalent to String.Format.
         /// </summary>
         /// <param name="format">The format string in String.Format style.</param>
         /// <param name="args">The arguments.</param>
-        public static string ToFormat(this string format, params object[] args)
-        {
-            return string.Format(format, args);
-        }
-
-        /// <summary>
-        /// Converts a JSON-formatted string into a dictionary.
-        /// </summary>
-        /// <param name="json">A JSON formatted string.</param>
-        /// <returns>Inputs.</returns>
-        public static Inputs ToInputs(this string json)
-        {
-            var dictionary = json != null ? ToDictionary(json) : null;
-            return dictionary == null
-                ? new Inputs()
-                : new Inputs(dictionary);
-        }
-
-        /// <summary>
-        /// Converts a JSON object into a dictionary.
-        /// </summary>
-        public static Inputs ToInputs(this JObject obj)
-        {
-            var variables = obj?.GetValue() as Dictionary<string, object>
-                            ?? new Dictionary<string, object>();
-            return new Inputs(variables);
-        }
-
-        /// <summary>
-        /// Converts a JSON formatted string into a the dictionary.
-        /// </summary>
-        /// <param name="json">The json.</param>
-        /// <returns>Returns a <c>null</c> if the object cannot be converted into a dictionary.</returns>
-        public static Dictionary<string, object> ToDictionary(this string json)
-        {
-            var values = JsonConvert.DeserializeObject(json,
-                new JsonSerializerSettings
-                {
-                    DateFormatHandling = DateFormatHandling.IsoDateFormat,
-                    DateParseHandling = DateParseHandling.None
-                });
-            return GetValue(values) as Dictionary<string, object>;
-        }
+        internal static string ToFormat(this string format, params object?[] args) //TODO: remove in v5
+            => string.Format(format, args);
 
         /// <summary>
         /// Returns a camel case version of the string.
         /// </summary>
+        /// <param name="s">The source string.</param>
+        /// <returns>System.String.</returns>
         public static string ToCamelCase(this string s)
         {
             if (string.IsNullOrWhiteSpace(s))
@@ -126,13 +25,19 @@ namespace GraphQL
                 return string.Empty;
             }
 
-            return $"{char.ToLowerInvariant(s[0])}{s.Substring(1)}";
+            var newFirstLetter = char.ToLowerInvariant(s[0]);
+            if (newFirstLetter == s[0])
+                return s;
+
+            return s.Length <= 256
+                ? FastChangeFirstLetter(newFirstLetter, s)
+                : newFirstLetter + s.Substring(1);
         }
 
         /// <summary>
         /// Returns a pascal case version of the string.
         /// </summary>
-        /// <param name="s">The s.</param>
+        /// <param name="s">The source string.</param>
         /// <returns>System.String.</returns>
         public static string ToPascalCase(this string s)
         {
@@ -141,62 +46,78 @@ namespace GraphQL
                 return string.Empty;
             }
 
-            return $"{char.ToUpperInvariant(s[0])}{s.Substring(1)}";
+            var newFirstLetter = char.ToUpperInvariant(s[0]);
+            if (newFirstLetter == s[0])
+                return s;
+
+            return s.Length <= 256
+               ? FastChangeFirstLetter(newFirstLetter, s)
+               : newFirstLetter + s.Substring(1);
+        }
+
+        private static string FastChangeFirstLetter(char newFirstLetter, string s)
+        {
+            Span<char> buffer = stackalloc char[s.Length];
+            buffer[0] = newFirstLetter;
+            s.AsSpan().Slice(1).CopyTo(buffer.Slice(1));
+            return buffer.ToString();
         }
 
         /// <summary>
-        /// Gets the value contained in a JObject, JValue, JProperty, or JArray.
+        /// Returns a constant case version of this string. For example, converts 'StringError' into 'STRING_ERROR'.
         /// </summary>
-        /// <param name="value">The object containing the value to extract.</param>
-        /// <remarks>If the value is a recognized type, it is returned unaltered.</remarks>
-        public static object GetValue(this object value)
+        public static string ToConstantCase(this string value) //TODO: rewrite to stackalloc/ string.Create()
         {
-            var objectValue = value as JObject;
-            if (objectValue != null)
+            int i;
+            int strLength = value.Length;
+            // iterate through each character in the string, stopping a character short of the end
+            for (i = 0; i < strLength - 1; ++i)
             {
-                var output = new Dictionary<string, object>();
-                foreach (var kvp in objectValue)
+                var curChar = value[i];
+                var nextChar = value[i + 1];
+                // look for the pattern [a-z][A-Z]
+                if (char.IsLower(curChar) && char.IsUpper(nextChar))
                 {
-                    output.Add(kvp.Key, GetValue(kvp.Value));
+                    InsertUnderscore();
+                    // then skip the remaining match checks since we already found a match here
+                    continue;
                 }
-                return output;
-            }
-
-            var propertyValue = value as JProperty;
-            if (propertyValue != null)
-            {
-                return new Dictionary<string, object>
+                // look for the pattern [0-9][A-Za-z]
+                if (char.IsDigit(curChar) && char.IsLetter(nextChar))
                 {
-                    { propertyValue.Name, GetValue(propertyValue.Value) }
-                };
-            }
-
-            var arrayValue = value as JArray;
-            if (arrayValue != null)
-            {
-                return arrayValue.Children().Aggregate(new List<object>(), (list, token) =>
-                {
-                    list.Add(GetValue(token));
-                    return list;
-                });
-            }
-
-            var rawValue = value as JValue;
-            if (rawValue != null)
-            {
-                var val = rawValue.Value;
-                if (val is long)
-                {
-                    long l = (long)val;
-                    if (l >= int.MinValue && l <= int.MaxValue)
-                    {
-                        return (int)l;
-                    }
+                    InsertUnderscore();
+                    continue;
                 }
-                return val;
+                // look for the pattern [A-Za-z][0-9]
+                if (char.IsLetter(curChar) && char.IsDigit(nextChar))
+                {
+                    InsertUnderscore();
+                    continue;
+                }
+                // if there's enough characters left, look for the pattern [A-Z][A-Z][a-z]
+                if (i < strLength - 2 && char.IsUpper(curChar) && char.IsUpper(nextChar) && char.IsLower(value[i + 2]))
+                {
+                    InsertUnderscore();
+                    continue;
+                }
             }
+            // convert the resulting string to uppercase
+            return value.ToUpperInvariant();
 
-            return value;
+            void InsertUnderscore()
+            {
+                // add an underscore between the two characters, increment i to skip the underscore, and increase strLength because the string is longer now
+                value = value.Substring(0, ++i) + '_' + value.Substring(i);
+                ++strLength;
+            }
         }
+
+        private static readonly char[] _bangs = new char[] { '!', '[', ']' };
+
+        /// <summary>
+        /// Removes brackets and exclamation points from a GraphQL type name -- for example,
+        /// converts <c>[Int!]</c> to <c>Int</c>
+        /// </summary>
+        public static string TrimGraphQLTypes(this string name) => name.Trim().Trim(_bangs);
     }
 }

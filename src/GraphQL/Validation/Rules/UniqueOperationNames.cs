@@ -1,52 +1,38 @@
-﻿using System;
-using System.Collections.Generic;
-using GraphQL.Language.AST;
+using GraphQL.Validation.Errors;
+using GraphQLParser;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// Unique operation names
+    /// Unique operation names:
     ///
     /// A GraphQL document is only valid if all defined operations have unique names.
     /// </summary>
     public class UniqueOperationNames : IValidationRule
     {
-        public Func<string, string> DuplicateOperationNameMessage => opName =>
-            $"There can only be one operation named {opName}.";
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly UniqueOperationNames Instance = new();
 
-        public INodeVisitor Validate(ValidationContext context)
+        /// <inheritdoc/>
+        /// <exception cref="UniqueOperationNamesError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(context.Document.OperationsCount() < 2 ? null : _nodeVisitor);
+
+        private static readonly INodeVisitor _nodeVisitor = new MatchingNodeVisitor<GraphQLOperationDefinition>((op, context) =>
         {
-            var frequency = new Dictionary<string, string>();
-
-            return new EnterLeaveListener(_ =>
+            if (op.Name is null)
             {
-                _.Match<Operation>(
-                    enter: op =>
-                    {
-                        if (context.Document.Operations.Count < 2)
-                        {
-                            return;
-                        }
-                        if (string.IsNullOrWhiteSpace(op.Name))
-                        {
-                            return;
-                        }
+                return;
+            }
 
-                        if (frequency.ContainsKey(op.Name))
-                        {
-                            var error = new ValidationError(
-                                context.OriginalQuery,
-                                "5.1.1.1",
-                                DuplicateOperationNameMessage(op.Name),
-                                op);
-                            context.ReportError(error);
-                        }
-                        else
-                        {
-                            frequency[op.Name] = op.Name;
-                        }
-                    });
-            });
-        }
+            var frequency = context.TypeInfo.UniqueOperationNames_Frequency ??= new();
+
+            if (!frequency.Add(op.Name))
+            {
+                context.ReportError(new UniqueOperationNamesError(context, op));
+            }
+        });
     }
 }

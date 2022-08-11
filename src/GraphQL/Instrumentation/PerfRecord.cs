@@ -1,23 +1,17 @@
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using GraphQL.Language.AST;
-using GraphQL.Types;
-using GraphQL.Utilities;
-using GraphQL.Validation;
-using AstField = GraphQL.Language.AST.Field;
 
 namespace GraphQL.Instrumentation
 {
+    /// <summary>
+    /// Records a performance metric.
+    /// </summary>
     [DebuggerDisplay("Type={Category} Subject={Subject} Duration={Duration}")]
     public class PerfRecord
     {
-        public PerfRecord()
-        {
-        }
-
-        public PerfRecord(string category, string subject, double start, Dictionary<string, object> metadata = null)
+        /// <summary>
+        /// Initializes a new instance with the specified properties.
+        /// </summary>
+        public PerfRecord(string category, string? subject, double start, Dictionary<string, object?>? metadata = null)
         {
             Category = category;
             Subject = subject;
@@ -25,153 +19,49 @@ namespace GraphQL.Instrumentation
             Metadata = metadata;
         }
 
-        public void MarkEnd(double end)
-        {
-            End = end;
-        }
+        /// <summary>
+        /// Sets the completion time, represented as an offset in milliseconds from starting the GraphQL operation's execution.
+        /// </summary>
+        public void MarkEnd(double end) => End = end;
 
+        /// <summary>
+        /// Gets or sets the category name.
+        /// </summary>
         public string Category { get; set; }
 
-        public string Subject { get; set; }
+        /// <summary>
+        /// Gets or sets the subject name.
+        /// </summary>
+        public string? Subject { get; set; }
 
-        public Dictionary<string, object> Metadata { get; set; }
+        /// <summary>
+        /// Gets or sets a dictionary of additional metadata.
+        /// </summary>
+        public Dictionary<string, object?>? Metadata { get; set; }
 
+        /// <summary>
+        /// Gets or sets the start time, represented as an offset in milliseconds from starting the GraphQL operation's execution.
+        /// </summary>
         public double Start { get; set; }
 
+        /// <summary>
+        /// Gets or sets the completion time, represented as an offset in milliseconds from starting the GraphQL operation's execution.
+        /// </summary>
         public double End { get; set; }
 
+        /// <summary>
+        /// Returns the total number of milliseconds required to execute the operation represented by this performance metric.
+        /// </summary>
         public double Duration => End - Start;
 
-        public T MetaField<T>(string key)
+        /// <summary>
+        /// Returns metadata for the specified key. Similar to <see cref="Metadata"/>[<paramref name="key"/>], but returns <c>default</c>
+        /// if <see cref="Metadata"/> is <c>null</c> or the specified key does not exist.
+        /// </summary>
+        public T? MetaField<T>(string key)
         {
-            object value;
-
-            if (Metadata.TryGetValue(key, out value))
-            {
-                return (T)value;
-            }
-
-            return default(T);
-        }
-    }
-
-    public class FieldStat
-    {
-        public string Name { get; set; }
-        public string ReturnType { get; set; }
-
-        // TODO: switch this to a histogram
-        public double Latency { get; set; }
-
-        public void AddLatency(double duration)
-        {
-            Latency += duration;
-        }
-    }
-
-    public class TypeStat
-    {
-        private readonly LightweightCache<string, FieldStat> _fields =
-            new LightweightCache<string, FieldStat>(fieldName => new FieldStat {Name = fieldName});
-
-        public string Name { get; set; }
-
-        public FieldStat[] Fields
-        {
-            get { return _fields.GetAll(); }
-            set
-            {
-                _fields.Clear();
-
-                value.Apply(f =>
-                {
-                    _fields[f.Name] = f;
-                });
-            }
-        }
-
-        public FieldStat this[string fieldName] => _fields[fieldName];
-    }
-
-    public class StatsPerSignature
-    {
-        public TypeStat[] PerType { get; set; }
-    }
-
-    public class Field
-    {
-        public string Name { get; set; }
-        public string ReturnType { get; set; }
-    }
-
-    public class Type
-    {
-        public string Name { get; set; }
-        public Field[] Fields { get; set; }
-    }
-
-    public class StatsReport
-    {
-        public StatsReport()
-        {
-            PerSignature = new Dictionary<string, StatsPerSignature>();
-        }
-
-        public DateTime Start { get; set; }
-        public DateTime End { get; set; }
-        public double Duration { get; set; }
-
-        public Dictionary<string, StatsPerSignature> PerSignature { get; set; }
-        public Type[] Types { get; set; }
-
-        public static StatsReport From(ISchema schema, Operation operation, PerfRecord[] records, DateTime start)
-        {
-            var operationStat = records.Single(x => string.Equals(x.Category, "operation"));
-
-            var report = new StatsReport();
-            report.Start = start;
-            report.End = start.AddMilliseconds(operationStat.Duration);
-            report.Duration = operationStat.Duration;
-            report.Types = TypesFromSchema(schema);
-
-            var perField = new LightweightCache<string, TypeStat>(type => new TypeStat {Name = type});
-
-            var typeInfo = new TypeInfo(schema);
-
-            var fieldVisitor = new EnterLeaveListener(_ =>
-            {
-                _.Match<AstField>(f =>
-                {
-                    var parent = typeInfo.GetParentType().GetNamedType();
-                    var parentType = parent.Name;
-                    var fieldName = f.Name;
-
-                    perField[parentType][fieldName].ReturnType = SchemaPrinter.ResolveName(typeInfo.GetLastType());
-                });
-            });
-
-            new BasicVisitor(typeInfo, fieldVisitor).Visit(operation);
-
-            var queryResolvers = records.Where(x => string.Equals(x.Category, "field")).ToList();
-
-            queryResolvers.Apply(resolver =>
-            {
-                var typeName = resolver.MetaField<string>("typeName");
-                var fieldName = resolver.MetaField<string>("fieldName");
-
-                perField[typeName][fieldName].AddLatency(resolver.Duration);
-            });
-
-            var operationName = operation.Name ?? "Anonymous";
-
-            report.PerSignature[operationName] = new StatsPerSignature {PerType = perField.GetAll()};
-
-            return report;
-        }
-
-        public static Type[] TypesFromSchema(ISchema schema)
-        {
-            return null;
+            var local = Metadata;
+            return local != null && local.TryGetValue(key, out var value) ? (T?)value : default;
         }
     }
 }

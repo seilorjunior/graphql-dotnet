@@ -1,158 +1,107 @@
-using System;
-using GraphQL.Language.AST;
 using GraphQL.Types;
-using Shouldly;
-using Xunit;
+using GraphQLParser.AST;
 
-namespace GraphQL.Tests.Execution
+namespace GraphQL.Tests.Execution;
+
+public class AstFromValueTests
 {
-    public class AstFromValueTests
+    [Fact]
+    public void throws_for_null_graphtype()
     {
-        [Fact]
-        public void converts_null_to_null()
-        {
-            object value = null;
-            var result = value.AstFromValue(null, null);
-            result.ShouldBeOfType<NullValue>();
-        }
-
-        [Fact]
-        public void converts_string_to_string_value()
-        {
-            var result = "test".AstFromValue(null, new StringGraphType());
-            result.ShouldNotBeNull();
-            result.ShouldBeOfType<StringValue>();
-        }
-
-        [Fact]
-        public void converts_bool_to_boolean_value()
-        {
-            var result = true.AstFromValue(null, new BooleanGraphType());
-            result.ShouldNotBeNull();
-            result.ShouldBeOfType<BooleanValue>();
-        }
-
-        [Fact]
-        public void converts_long_to_long_value()
-        {
-            long val = 12345678910111213;
-            var result = val.AstFromValue(null, new IntGraphType());
-            result.ShouldNotBeNull();
-            result.ShouldBeOfType<LongValue>();
-        }
-
-        [Fact]
-        public void converts_decimal_to_decimal_value()
-        {
-            decimal val = 1234.56789m;
-            var result = val.AstFromValue(null, new DecimalGraphType());
-            result.ShouldNotBeNull();
-            result.ShouldBeOfType<DecimalValue>();
-        }
-
-        [Fact]
-        public void converts_int_to_int_value()
-        {
-            int val = 123;
-            var result = val.AstFromValue(null, new IntGraphType());
-            result.ShouldNotBeNull();
-            result.ShouldBeOfType<IntValue>();
-        }
-
-        [Fact]
-        public void converts_double_to_float_value()
-        {
-            double val = 0.42;
-            var result = val.AstFromValue(null, new FloatGraphType());
-            result.ShouldNotBeNull();
-            result.ShouldBeOfType<FloatValue>();
-        }
-
-        [Fact]
-        public void registers_ast_from_value_converters()
-        {
-            var schema = new Schema();
-            schema.RegisterValueConverter(new ByteValueConverter());
-
-            byte value = 12;
-            var result = schema.FindValueConverter(value, null);
-            result.ShouldNotBeNull("AST from value converter should be registered");
-            result.ShouldBeOfType<ByteValueConverter>();
-        }
-
-        [Fact]
-        public void converts_byte_to_byte_value()
-        {
-            var schema = new Schema();
-            schema.RegisterValueConverter(new ByteValueConverter());
-
-            byte value = 12;
-            var result = value.AstFromValue(schema, new ByteGraphType());
-            result.ShouldNotBeNull();
-            result.ShouldBeOfType<ByteValue>();
-        }
+        Should.Throw<ArgumentNullException>(() => ((IGraphType)null).ToAST(true));
     }
 
-    internal class ByteValueConverter : IAstFromValueConverter
+    [Fact]
+    public void converts_null_to_null()
     {
-        public bool Matches(object value, IGraphType type)
-        {
-            return value is byte;
-        }
-
-        public IValue Convert(object value, IGraphType type)
-        {
-            return new ByteValue((byte)value);
-        }
+        object value = null;
+        var result = new StringGraphType().ToAST(value);
+        result.ShouldBeOfType<GraphQLNullValue>();
     }
 
-    internal class ByteValue : ValueNode<byte>
+    [Fact]
+    public void converts_string_to_string_value()
     {
-        public ByteValue(byte value)
-        {
-            Value = value;
-        }
-
-        protected override bool Equals(ValueNode<byte> node)
-        {
-            return Value == node.Value;
-        }
+        var result = new StringGraphType().ToAST("test");
+        result.ShouldNotBeNull();
+        result.ShouldBeOfType<GraphQLStringValue>().Value.ShouldBe("test");
     }
 
-    internal class ByteGraphType : ScalarGraphType
+    [Fact]
+    public void converts_bool_to_boolean_value()
     {
-        public ByteGraphType()
-        {
-            Name = "Byte";
-        }
+        var result = new BooleanGraphType().ToAST(true);
+        result.ShouldNotBeNull();
+        result.ShouldBeAssignableTo<GraphQLBooleanValue>().Value.ShouldBe("true");
+    }
 
-        public override object Serialize(object value)
-        {
-            return ParseValue(value);
-        }
+    [Fact]
+    public void converts_long_to_long_value()
+    {
+        long val = 12345678910111213;
+        var result = new LongGraphType().ToAST(val);
+        result.ShouldNotBeNull();
+        result.ShouldBeOfType<GraphQLIntValue>().Value.ShouldBe("12345678910111213");
+    }
 
-        public override object ParseValue(object value)
-        {
-            if (value == null)
-            {
-                return null;
-            }
+    [Fact]
+    public void converts_long_to_int_value()
+    {
+        long val = 12345678910111213;
+        Should.Throw<OverflowException>(() => new IntGraphType().ToAST(val));
+    }
 
-            try
-            {
-                var result = Convert.ToByte(value);
-                return result;
-            }
-            catch (FormatException)
-            {
-                return null;
-            }
-        }
+    [Fact]
+    public void converts_decimal_to_decimal_value()
+    {
+        decimal val = 1234.56789m;
+        var result = new DecimalGraphType().ToAST(val);
+        result.ShouldNotBeNull();
+        result.ShouldBeOfType<GraphQLFloatValue>().Value.ShouldBe("1234.56789");
+    }
 
-        public override object ParseLiteral(IValue value)
-        {
-            var byteValue = value as ByteValue;
-            return byteValue?.Value;
-        }
+    [Fact]
+    public void converts_int_to_int_value()
+    {
+        int val = 123;
+        var result = new IntGraphType().ToAST(val);
+        result.ShouldNotBeNull();
+        result.ShouldBeOfType<GraphQLIntValue>().Value.ShouldBe("123");
+    }
+
+    [Fact]
+    public void converts_double_to_float_value()
+    {
+        double val = 0.42;
+        var result = new FloatGraphType().ToAST(val);
+        result.ShouldNotBeNull();
+        result.ShouldBeOfType<GraphQLFloatValue>().Value.ShouldBe("0.42");
+    }
+
+    [Fact]
+    public void converts_byte_to_int_value()
+    {
+        byte value = 12;
+        var result = new ByteGraphType().ToAST(value);
+        result.ShouldNotBeNull();
+        result.ShouldBeOfType<GraphQLIntValue>().Value.ShouldBe("12");
+    }
+
+    [Fact]
+    public void converts_sbyte_to_int_value()
+    {
+        sbyte val = -12;
+        var result = new SByteGraphType().ToAST(val);
+        result.ShouldNotBeNull();
+        result.ShouldBeOfType<GraphQLIntValue>().Value.ShouldBe("-12");
+    }
+
+    [Fact]
+    public void converts_uri_to_string_value()
+    {
+        var val = new Uri("http://www.wp.pl");
+        var result = new UriGraphType().ToAST(val);
+        result.ShouldNotBeNull();
+        result.ShouldBeOfType<GraphQLStringValue>().Value.ShouldBe(val.ToString());
     }
 }

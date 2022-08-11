@@ -1,33 +1,30 @@
-﻿using System;
 using GraphQL.Types;
-using System.Linq;
-using GraphQL.Language.AST;
+using GraphQL.Validation.Errors;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// Scalar leafs
+    /// Scalar leafs:
     ///
     /// A GraphQL document is valid only if all leaf fields (fields without
     /// sub selections) are of scalar or enum types.
     /// </summary>
     public class ScalarLeafs : IValidationRule
     {
-        public Func<string, string, string> NoSubselectionAllowedMessage = (field, type) =>
-            $"Field {field} of type {type} must not have a sub selection";
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly ScalarLeafs Instance = new();
 
-        public Func<string, string, string> RequiredSubselectionMessage = (field, type) =>
-            $"Field {field} of type {type} must have a sub selection";
+        /// <inheritdoc/>
+        /// <exception cref="ScalarLeafsError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(_nodeVisitor);
 
-        public INodeVisitor Validate(ValidationContext context)
-        {
-            return new EnterLeaveListener(_ =>
-            {
-                _.Match<Field>(f => Field(context.TypeInfo.GetLastType(), f, context));
-            });
-        }
+        private static readonly INodeVisitor _nodeVisitor =
+            new MatchingNodeVisitor<GraphQLField>((f, context) => Field(context.TypeInfo.GetLastType(), f, context));
 
-        private void Field(IGraphType type, Field field, ValidationContext context)
+        private static void Field(IGraphType? type, GraphQLField field, ValidationContext context)
         {
             if (type == null)
             {
@@ -36,16 +33,14 @@ namespace GraphQL.Validation.Rules
 
             if (type.IsLeafType())
             {
-                if (field.SelectionSet != null && field.SelectionSet.Selections.Any())
+                if (field.SelectionSet != null && field.SelectionSet.Selections.Count > 0)
                 {
-                    var error = new ValidationError(context.OriginalQuery, "5.2.3", NoSubselectionAllowedMessage(field.Name, context.Print(type)), field.SelectionSet);
-                    context.ReportError(error);
+                    context.ReportError(new ScalarLeafsError(context, field.SelectionSet, field, type));
                 }
             }
-            else if(field.SelectionSet == null || !field.SelectionSet.Selections.Any())
+            else if (field.SelectionSet == null || field.SelectionSet.Selections.Count == 0)
             {
-                var error = new ValidationError(context.OriginalQuery, "5.2.3", RequiredSubselectionMessage(field.Name, context.Print(type)), field);
-                context.ReportError(error);
+                context.ReportError(new ScalarLeafsError(context, field, type));
             }
         }
     }

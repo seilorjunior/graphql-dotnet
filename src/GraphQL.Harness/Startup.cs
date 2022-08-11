@@ -1,14 +1,9 @@
 using Example;
-using GraphQL.Http;
+using GraphQL.Instrumentation;
+using GraphQL.MicrosoftDI;
 using GraphQL.StarWars;
-using GraphQL.StarWars.Types;
-using GraphQL.Types;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
+using GraphQL.SystemTextJson;
+using Microsoft.Extensions.Options;
 
 namespace GraphQL.Harness
 {
@@ -24,37 +19,54 @@ namespace GraphQL.Harness
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
-            services.AddSingleton<IDependencyResolver>(s => new FuncDependencyResolver(s.GetRequiredService));
+            // add execution components
+            services.AddGraphQL(builder => builder
+                .AddSystemTextJson()
+                .AddErrorInfoProvider((opts, serviceProvider) =>
+                {
+                    var settings = serviceProvider.GetRequiredService<IOptions<GraphQLSettings>>();
+                    opts.ExposeExceptionStackTrace = settings.Value.ExposeExceptions;
+                })
+                .AddSchema<StarWarsSchema>()
+                .AddGraphTypes(typeof(StarWarsQuery).Assembly)
+                .AddMiddleware<CountFieldMiddleware>(false) // do not auto-install middleware
+                .AddMiddleware<InstrumentFieldsMiddleware>(false) // do not auto-install middleware
+                .ConfigureSchema((schema, serviceProvider) =>
+                {
+                    // install middleware only when the custom EnableMetrics option is set
+                    var settings = serviceProvider.GetRequiredService<IOptions<GraphQLSettings>>();
+                    if (settings.Value.EnableMetrics)
+                    {
+                        var middlewares = serviceProvider.GetRequiredService<IEnumerable<IFieldMiddleware>>();
+                        foreach (var middleware in middlewares)
+                            schema.FieldMiddleware.Use(middleware);
+                    }
+                }));
 
-            services.AddSingleton<IDocumentExecuter, DocumentExecuter>();
-            services.AddSingleton<IDocumentWriter, DocumentWriter>();
-
+            // add something like repository
             services.AddSingleton<StarWarsData>();
-            services.AddSingleton<StarWarsQuery>();
-            services.AddSingleton<StarWarsMutation>();
-            services.AddSingleton<HumanType>();
-            services.AddSingleton<HumanInputType>();
-            services.AddSingleton<DroidType>();
-            services.AddSingleton<CharacterInterface>();
-            services.AddSingleton<EpisodeEnum>();
-            services.AddSingleton<ISchema, StarWarsSchema>();
 
-            services.AddSingleton<IHttpContextAccessor, HttpContextAccessor>();
+            // add infrastructure stuff
+            services.AddHttpContextAccessor();
+            services.AddLogging(builder => builder.AddConsole());
+            services.AddSingleton<GraphQLMiddleware>();
+
+            // add options configuration
+            services.Configure<GraphQLSettings>(Configuration);
+            services.Configure<GraphQLSettings>(settings => settings.BuildUserContext = ctx => new GraphQLUserContext { User = ctx.User });
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
-        public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
+        public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
         {
-            loggerFactory.AddConsole();
-            app.UseDeveloperExceptionPage();
+            if (env.IsDevelopment())
+                app.UseDeveloperExceptionPage();
 
-            app.UseMiddleware<GraphQLMiddleware>(new GraphQLSettings
-            {
-                BuildUserContext = ctx => new GraphQLUserContext
-                {
-                    User = ctx.User
-                }
-            });
+            app.UseMiddleware<GraphQLMiddleware>();
+            app.UseGraphQLPlayground();
+            app.UseGraphQLGraphiQL();
+            app.UseGraphQLAltair();
+            app.UseGraphQLVoyager();
         }
     }
 }

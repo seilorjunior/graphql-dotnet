@@ -1,9 +1,10 @@
-﻿using GraphQL.Language.AST;
+using GraphQL.Validation.Errors;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// Fragments on composite type
+    /// Fragments on composite type:
     ///
     /// Fragments use a type condition to determine if they apply, since fragments
     /// can only be spread into a composite type (object, interface, or union), the
@@ -11,46 +12,33 @@ namespace GraphQL.Validation.Rules
     /// </summary>
     public class FragmentsOnCompositeTypes : IValidationRule
     {
-        public string InlineFragmentOnNonCompositeErrorMessage(string type)
-        {
-            return $"Fragment cannot condition on non composite type \"{type}\".";
-        }
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly FragmentsOnCompositeTypes Instance = new();
 
-        public string FragmentOnNonCompositeErrorMessage(string fragName, string type)
-        {
-            return $"Fragment \"{fragName}\" cannot condition on non composite type \"{type}\".";
-        }
+        /// <inheritdoc/>
+        /// <exception cref="FragmentsOnCompositeTypesError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(_nodeVisitor);
 
-        public INodeVisitor Validate(ValidationContext context)
-        {
-            return new EnterLeaveListener(_ =>
+        private static readonly INodeVisitor _nodeVisitor = new NodeVisitors(
+            new MatchingNodeVisitor<GraphQLInlineFragment>((node, context) =>
             {
-                _.Match<InlineFragment>(node =>
+                var type = context.TypeInfo.GetLastType();
+                if (node.TypeCondition?.Type != null && type != null && !type.IsCompositeType())
                 {
-                    var type = context.TypeInfo.GetLastType();
-                    if (node.Type != null && type != null && !type.IsCompositeType())
-                    {
-                        context.ReportError(new ValidationError(
-                            context.OriginalQuery,
-                            "5.4.1.3",
-                            InlineFragmentOnNonCompositeErrorMessage(context.Print(node.Type)),
-                            node.Type));
-                    }
-                });
+                    context.ReportError(new FragmentsOnCompositeTypesError(context, node));
+                }
+            }),
 
-                _.Match<FragmentDefinition>(node =>
+            new MatchingNodeVisitor<GraphQLFragmentDefinition>((node, context) =>
+            {
+                var type = context.TypeInfo.GetLastType();
+                if (type != null && !type.IsCompositeType())
                 {
-                    var type = context.TypeInfo.GetLastType();
-                    if (type != null && !type.IsCompositeType())
-                    {
-                        context.ReportError(new ValidationError(
-                            context.OriginalQuery,
-                            "5.4.1.3",
-                            FragmentOnNonCompositeErrorMessage(node.Name, context.Print(node.Type)),
-                            node.Type));
-                    }
-                });
-            });
-        }
+                    context.ReportError(new FragmentsOnCompositeTypesError(context, node));
+                }
+            })
+        );
     }
 }

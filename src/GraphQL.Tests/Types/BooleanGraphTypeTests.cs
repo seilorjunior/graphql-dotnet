@@ -1,47 +1,49 @@
-﻿using GraphQL.Types;
-using Shouldly;
-using Xunit;
+using GraphQL.Types;
 
-namespace GraphQL.Tests.Types
+namespace GraphQL.Tests.Types;
+
+public class BooleanGraphTypeTests
 {
-    public class BooleanGraphTypeTests
+    private readonly BooleanGraphType type = new BooleanGraphType();
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData("false")]
+    [InlineData("true")]
+    [InlineData("False")]
+    [InlineData("True")]
+    [InlineData("abc")]
+    [InlineData("21")]
+    public void parse_throws(object value)
     {
-        private BooleanGraphType type = new BooleanGraphType();
+        Should.Throw<InvalidOperationException>(() => type.ParseValue(value));
+        type.CanParseValue(value).ShouldBeFalse();
+    }
 
-        [Fact]
-        public void coerces_0_to_false()
-        {
-            type.ParseValue(0).ShouldBe(false);
-        }
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData("false")]
+    [InlineData("true")]
+    [InlineData("False")]
+    [InlineData("True")]
+    [InlineData("abc")]
+    [InlineData("21")]
+    public void serialize_throws(object value)
+    {
+        Should.Throw<InvalidOperationException>(() => type.Serialize(value));
+    }
 
-        [Fact]
-        public void coerces_1_to_true()
-        {
-            type.ParseValue(1).ShouldBe(true);
-        }
+    [Fact]
+    public void serialize_input_to_false()
+    {
+        type.Serialize(false).ShouldBe(false);
+    }
 
-        [Fact]
-        public void coerces_string_false()
-        {
-            type.ParseValue("false").ShouldBe(false);
-        }
-
-        [Fact]
-        public void coerces_string_False()
-        {
-            type.ParseValue("False").ShouldBe(false);
-        }
-
-        [Fact]
-        public void coerces_string_true()
-        {
-            type.ParseValue("true").ShouldBe(true);
-        }
-
-        [Fact]
-        public void coerces_string_True()
-        {
-            type.ParseValue("True").ShouldBe(true);
-        }
+    [Fact]
+    public void serialize_input_to_true()
+    {
+        type.Serialize(true).ShouldBe(true);
     }
 }

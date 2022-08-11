@@ -1,88 +1,78 @@
-using System;
-using System.Linq;
-using GraphQL.Http;
+using GraphQL.Execution;
+using GraphQL.SystemTextJson;
+using GraphQL.Types;
 using GraphQL.Utilities;
 using GraphQLParser.Exceptions;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using Shouldly;
 
-namespace GraphQL.Tests.Utilities
+namespace GraphQL.Tests.Utilities;
+
+public class SchemaBuilderTestBase
 {
-    public class SchemaBuilderTestBase
+    public SchemaBuilderTestBase()
     {
-        public SchemaBuilderTestBase()
-        {
-            Builder = new SchemaBuilder();
-        }
+        Builder = new SchemaBuilder();
+    }
 
-        protected readonly IDocumentExecuter Executer = new DocumentExecuter();
-        protected readonly IDocumentWriter Writer = new DocumentWriter(indent: true);
-        protected SchemaBuilder Builder { get; set; }
+    protected readonly IDocumentExecuter Executer = new DocumentExecuter();
+    protected readonly IGraphQLTextSerializer Serializer = new GraphQLSerializer(indent: true);
+    protected SchemaBuilder Builder { get; set; }
 
-        public ExecutionResult AssertQuery(Action<ExecuteConfig> configure)
-        {
-            var config = new ExecuteConfig();
-            configure(config);
+    public ExecutionResult AssertQuery(Action<ExecuteConfig> configure)
+    {
+        var config = new ExecuteConfig();
+        configure(config);
 
-            var schema = Builder.Build(config.Definitions);
-            schema.Initialize();
+        var schema = Builder.Build(config.Definitions);
+        config.ConfigureBuildedSchema?.Invoke(schema);
+        schema.Initialize();
 
-            var queryResult = CreateQueryResult(config.ExpectedResult);
+        var queryResult = CreateQueryResult(config.ExpectedResult);
 
-            return AssertQuery(_ =>
+        return AssertQuery(
+            _ =>
             {
                 _.Schema = schema;
                 _.Query = config.Query;
-                _.Inputs = config.Variables.ToInputs();
-            }, queryResult);
-        }
-
-        public ExecutionResult AssertQuery(Action<ExecutionOptions> options, ExecutionResult expectedExecutionResult)
-        {
-            var runResult = Executer.ExecuteAsync(options).Result;
-
-            var writtenResult = Writer.Write(runResult);
-            var expectedResult = Writer.Write(expectedExecutionResult);
-
-            string additionalInfo = null;
-
-            if (runResult.Errors?.Any() == true)
-            {
-                additionalInfo = string.Join(Environment.NewLine, runResult.Errors
-                    .Where(x => x.InnerException is GraphQLSyntaxErrorException)
-                    .Select(x => x.InnerException.Message));
-            }
-
-            writtenResult.ShouldBe(expectedResult, additionalInfo);
-
-            return runResult;
-        }
-
-        public ExecutionResult CreateQueryResult(string result)
-        {
-            object expected = null;
-            if (!string.IsNullOrWhiteSpace(result))
-            {
-                expected = JObject.Parse(result); /*/JsonConvert.SerializeObject(
-                    result,
-                    new JsonSerializerSettings
-                    {
-                        // ContractResolver = new CamelCasePropertyNamesContractResolver(),
-                        Formatting = Formatting.Indented,
-                        DateFormatHandling = DateFormatHandling.IsoDateFormat,
-                        DateFormatString = "yyyy'-'MM'-'dd'T'HH':'mm':'ss.FFFFFFF'Z'",
-                    });*/
-            }
-            return new ExecutionResult { Data = expected };
-        }
+                _.Variables = config.Variables.ToInputs();
+                _.Root = config.Root;
+                _.ThrowOnUnhandledException = config.ThrowOnUnhandledException;
+                _.Listeners.AddRange(config.Listeners);
+            },
+            queryResult);
     }
 
-    public class ExecuteConfig
+    public ExecutionResult AssertQuery(Action<ExecutionOptions> options, ExecutionResult expectedExecutionResult)
     {
-        public string Definitions { get; set; }
-        public string Query { get; set; }
-        public string Variables { get; set; }
-        public string ExpectedResult { get; set; }
+        var runResult = Executer.ExecuteAsync(options).Result;
+
+        var writtenResult = Serializer.Serialize(runResult);
+        var expectedResult = Serializer.Serialize(expectedExecutionResult);
+
+        string additionalInfo = null;
+
+        if (runResult.Errors?.Any() == true)
+        {
+            additionalInfo = string.Join(Environment.NewLine, runResult.Errors
+                .Where(x => x.InnerException is GraphQLSyntaxErrorException)
+                .Select(x => x.InnerException.Message));
+        }
+
+        writtenResult.ShouldBeCrossPlat(expectedResult, additionalInfo);
+
+        return runResult;
     }
+
+    public ExecutionResult CreateQueryResult(string result) => result.ToExecutionResult();
+}
+
+public class ExecuteConfig
+{
+    public string Definitions { get; set; }
+    public string Query { get; set; }
+    public string Variables { get; set; }
+    public string ExpectedResult { get; set; }
+    public object Root { get; set; }
+    public bool ThrowOnUnhandledException { get; set; }
+    public List<IDocumentExecutionListener> Listeners { get; set; } = new List<IDocumentExecutionListener>();
+    public Action<ISchema> ConfigureBuildedSchema { get; set; }
 }

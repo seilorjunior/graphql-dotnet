@@ -1,14 +1,14 @@
-﻿using GraphQL.Validation.Rules;
-using Xunit;
+using GraphQL.Validation.Errors;
+using GraphQL.Validation.Rules;
 
-namespace GraphQL.Tests.Validation
+namespace GraphQL.Tests.Validation;
+
+public class UniqueFragmentNamesTests : ValidationTestBase<UniqueFragmentNames, ValidationSchema>
 {
-  public class UniqueFragmentNamesTests : ValidationTestBase<UniqueFragmentNames, ValidationSchema>
-  {
     [Fact]
     public void no_fragments()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         {
           field
         }
@@ -18,7 +18,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void one_fragment()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         {
           ...fragA
         }
@@ -31,7 +31,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void many_fragments()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         {
           ...fragA
           ...fragB
@@ -52,7 +52,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void inline_fragments_are_always_unique()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         {
           ...on Type {
             fieldA
@@ -67,7 +67,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void fragment_and_operation_named_the_same()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         query Foo {
           ...Foo
         }
@@ -80,9 +80,9 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void fragments_named_the_same()
     {
-      ShouldFailRule(_ =>
-      {
-        _.Query = @"
+        ShouldFailRule(_ =>
+        {
+            _.Query = @"
           {
             ...fragA
           }
@@ -93,17 +93,17 @@ namespace GraphQL.Tests.Validation
             fieldB
           }
         ";
-        // Note: this is failing on "fragment"; graphql-js fails on the fragment name.
-        duplicateFrag(_, "fragA", 5, 11, 8, 11);
-      });
+            // Note: this is failing on "fragment"; graphql-js fails on the fragment name.
+            duplicateFrag(_, "fragA", 5, 11, 8, 11);
+        });
     }
 
     [Fact]
     public void fragments_named_the_same_without_being_referenced()
     {
-      ShouldFailRule(_ =>
-      {
-        _.Query = @"
+        ShouldFailRule(_ =>
+        {
+            _.Query = @"
           fragment fragA on Type {
             fieldA
           }
@@ -111,13 +111,12 @@ namespace GraphQL.Tests.Validation
             fieldB
           }
         ";
-        // Note: this is failing on "fragment"; graphql-js fails on the fragment name.
-        duplicateFrag(_, "fragA", 2, 11, 5, 11);
-      });
+            // Note: this is failing on "fragment"; graphql-js fails on the fragment name.
+            duplicateFrag(_, "fragA", 2, 11, 5, 11);
+        });
     }
 
-
-    private void duplicateFrag(
+    private static void duplicateFrag(
       ValidationTestConfig _,
       string fragName,
       int line1,
@@ -125,12 +124,11 @@ namespace GraphQL.Tests.Validation
       int line2,
       int column2)
     {
-      _.Error(err =>
-      {
-        err.Message = Rule.DuplicateFragmentNameMessage(fragName);
-        err.Loc(line1, column1);
-        err.Loc(line2, column2);
-      });
+        _.Error(err =>
+        {
+            err.Message = UniqueFragmentNamesError.DuplicateFragmentNameMessage(fragName);
+            err.Loc(line1, column1);
+            err.Loc(line2, column2);
+        });
     }
-  }
 }

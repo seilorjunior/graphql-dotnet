@@ -1,14 +1,14 @@
-﻿using GraphQL.Validation.Rules;
-using Xunit;
+using GraphQL.Validation.Errors;
+using GraphQL.Validation.Rules;
 
-namespace GraphQL.Tests.Validation
+namespace GraphQL.Tests.Validation;
+
+public class NoUnusedVariablesTests : ValidationTestBase<NoUnusedVariables, ValidationSchema>
 {
-  public class NoUnusedVariablesTests : ValidationTestBase<NoUnusedVariables, ValidationSchema>
-  {
     [Fact]
     public void uses_all_variables()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         query ($a: String, $b: String, $c: String) {
           field(a: $a, b: $b, c: $c)
         }
@@ -18,7 +18,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void uses_all_variables_deeply()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         query Foo($a: String, $b: String, $c: String) {
           field(a: $a) {
             field(b: $b) {
@@ -32,7 +32,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void uses_all_variables_deeply_in_inline_fragments()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         query Foo($a: String, $b: String, $c: String) {
           ... on Type {
             field(a: $a) {
@@ -50,7 +50,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void uses_all_variables_in_fragments()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         query Foo($a: String, $b: String, $c: String) {
           ...FragA
         }
@@ -73,7 +73,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void variable_used_by_fragment_in_multiple_operations()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         query Foo($a: String) {
           ...FragA
         }
@@ -92,7 +92,7 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void variable_used_by_recursive_fragment()
     {
-      ShouldPassRule(@"
+        ShouldPassRule(@"
         query Foo($a: String) {
           ...FragA
         }
@@ -107,38 +107,38 @@ namespace GraphQL.Tests.Validation
     [Fact]
     public void variable_not_used()
     {
-      ShouldFailRule(_ =>
-      {
-        _.Query = @"
+        ShouldFailRule(_ =>
+        {
+            _.Query = @"
           query ($a: String, $b: String, $c: String) {
             field(a: $a, b: $b)
           }
         ";
-        unusedVar(_, "c", null, 2, 42);
-      });
+            unusedVar(_, "c", null, 2, 42);
+        });
     }
 
     [Fact]
     public void multiple_variables_not_used()
     {
-      ShouldFailRule(_ =>
-      {
-        _.Query = @"
+        ShouldFailRule(_ =>
+        {
+            _.Query = @"
           query Foo($a: String, $b: String, $c: String) {
             field(b: $b)
           }
         ";
-        unusedVar(_, "a", "Foo", 2, 21);
-        unusedVar(_, "c", "Foo", 2, 45);
-      });
+            unusedVar(_, "a", "Foo", 2, 21);
+            unusedVar(_, "c", "Foo", 2, 45);
+        });
     }
 
     [Fact]
     public void variable_not_used_in_fragments()
     {
-      ShouldFailRule(_ =>
-      {
-        _.Query = @"
+        ShouldFailRule(_ =>
+        {
+            _.Query = @"
           query Foo($a: String, $b: String, $c: String) {
             ...FragA
           }
@@ -156,16 +156,16 @@ namespace GraphQL.Tests.Validation
             field
           }
         ";
-        unusedVar(_, "c", "Foo", 2, 45);
-      });
+            unusedVar(_, "c", "Foo", 2, 45);
+        });
     }
 
     [Fact]
     public void multiple_variables_not_used_InFragments()
     {
-      ShouldFailRule(_ =>
-      {
-        _.Query = @"
+        ShouldFailRule(_ =>
+        {
+            _.Query = @"
           query Foo($a: String, $b: String, $c: String) {
             ...FragA
           }
@@ -183,17 +183,17 @@ namespace GraphQL.Tests.Validation
             field
           }
         ";
-        unusedVar(_, "a", "Foo", 2, 21);
-        unusedVar(_, "c", "Foo", 2, 45);
-      });
+            unusedVar(_, "a", "Foo", 2, 21);
+            unusedVar(_, "c", "Foo", 2, 45);
+        });
     }
 
     [Fact]
     public void variable_not_used_by_unreferenced_fragment()
     {
-      ShouldFailRule(_ =>
-      {
-        _.Query = @"
+        ShouldFailRule(_ =>
+        {
+            _.Query = @"
           query Foo($b: String) {
             ...FragA
           }
@@ -204,16 +204,16 @@ namespace GraphQL.Tests.Validation
             field(b: $b)
           }
         ";
-        unusedVar(_, "b", "Foo", 2, 21);
-      });
+            unusedVar(_, "b", "Foo", 2, 21);
+        });
     }
 
     [Fact]
     public void variable_not_used_by_fragment_used_by_other_operation()
     {
-      ShouldFailRule(_ =>
-      {
-        _.Query = @"
+        ShouldFailRule(_ =>
+        {
+            _.Query = @"
           query Foo($b: String) {
             ...FragA
           }
@@ -227,9 +227,9 @@ namespace GraphQL.Tests.Validation
             field(b: $b)
           }
         ";
-        unusedVar(_, "b", "Foo", 2, 21);
-        unusedVar(_, "a", "Bar", 5, 21);
-      });
+            unusedVar(_, "b", "Foo", 2, 21);
+            unusedVar(_, "a", "Bar", 5, 21);
+        });
     }
 
     private void unusedVar(
@@ -240,11 +240,10 @@ namespace GraphQL.Tests.Validation
       int column
       )
     {
-      _.Error(err =>
-      {
-        err.Message = Rule.UnusedVariableMessage(varName, opName);
-        err.Loc(line, column);
-      });
+        _.Error(err =>
+        {
+            err.Message = NoUnusedVariablesError.UnusedVariableMessage(varName, opName);
+            err.Loc(line, column);
+        });
     }
-  }
 }

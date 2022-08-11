@@ -1,170 +1,323 @@
-using System;
-using System.Collections.Generic;
-using System.Reactive.Linq;
-using System.Threading.Tasks;
-using GraphQL.Language.AST;
-using GraphQL.Subscription;
 using GraphQL.Types;
-using static GraphQL.Execution.ExecutionHelper;
+using GraphQLParser.AST;
 
-namespace GraphQL.Execution
+namespace GraphQL.Execution;
+
+/// <summary>
+/// Executes a subscription.
+/// </summary>
+public class SubscriptionExecutionStrategy : ExecutionStrategy
 {
-    public class SubscriptionExecutionStrategy : ParallelExecutionStrategy
+    private readonly IExecutionStrategy _baseExecutionStrategy;
+
+    /// <summary>
+    /// Initializes a new instance with a parallel execution strategy for child nodes.
+    /// </summary>
+    public SubscriptionExecutionStrategy()
+        : this(new ParallelExecutionStrategy()) // new instance of shared variables within ParallelExecutionStrategy; do not use ParallelExecutionStrategy.Instance
     {
-        public override async Task<ExecutionResult> ExecuteAsync(ExecutionContext context)
+    }
+
+    /// <summary>
+    /// Initializes a new instance with the specified execution strategy for child nodes.
+    /// </summary>
+    public SubscriptionExecutionStrategy(IExecutionStrategy baseExecutionStrategy)
+    {
+        _baseExecutionStrategy = baseExecutionStrategy ?? throw new ArgumentNullException(nameof(baseExecutionStrategy));
+    }
+
+    /// <summary>
+    /// Gets a static instance of <see cref="SubscriptionExecutionStrategy"/>.
+    /// </summary>
+    public static SubscriptionExecutionStrategy Instance { get; } = new();
+
+    /// <summary>
+    /// Executes a GraphQL subscription request and returns the result. The result consists
+    /// of one or more streams of GraphQL responses, returned within <see cref="ExecutionResult.Streams"/>.
+    /// No serializable <see cref="ExecutionResult"/> is directly returned unless an error has occurred.
+    /// This relates more to the protocol in use (defined in the transport layer) than the response here.
+    /// <br/><br/>
+    /// Keep in mind that if a scoped context is passed into <see cref="ExecutionContext.RequestServices"/>,
+    /// and if it is disposed after the initial execution, node executions of subsequent data events will contain
+    /// the disposed <see cref="ExecutionContext.RequestServices"/> instance and hence be unusable.
+    /// <br/><br/>
+    /// If scoped services are needed, it is recommended to utilize the ScopedSubscriptionExecutionStrategy
+    /// class from the GraphQL.MicrosoftDI package, which will create a service scope during processing of data events.
+    /// </summary>
+    public override async Task<ExecutionResult> ExecuteAsync(ExecutionContext context)
+    {
+        var rootType = GetOperationRootType(context);
+        var rootNode = BuildExecutionRootNode(context, rootType);
+
+        var streams = await ExecuteSubscriptionNodesAsync(context, rootNode.SubFields!).ConfigureAwait(false);
+
+        // if execution is successful, errors and extensions are not returned per the graphql-ws protocol
+        // if execution is unsuccessful, the DocumentExecuter will add context errors to the result
+
+        return new ExecutionResult(context)
         {
-            var rootType = GetOperationRootType(context.Document, context.Schema, context.Operation);
-            var rootNode = BuildExecutionRootNode(context, rootType);
+            Executed = true,
+            Streams = streams,
+        };
+    }
 
-            var streams = await ExecuteSubscriptionNodesAsync(context, rootNode.SubFields);
+    private async Task<IDictionary<string, IObservable<ExecutionResult>>?> ExecuteSubscriptionNodesAsync(ExecutionContext context, ExecutionNode[] nodes)
+    {
+        var streams = new Dictionary<string, IObservable<ExecutionResult>>();
 
-            ExecutionResult result = new SubscriptionExecutionResult
-            {
-                Streams = streams
-            }.With(context);
-
-            return result;
+        foreach (var node in nodes)
+        {
+            var stream = await ResolveResponseStreamAsync(context, node).ConfigureAwait(false);
+            if (stream == null)
+                return null;
+            streams[node.Name!] = stream;
         }
 
-        private async Task<IDictionary<string, IObservable<ExecutionResult>>> ExecuteSubscriptionNodesAsync(ExecutionContext context, IDictionary<string, ExecutionNode> nodes)
+        return streams;
+    }
+
+    /// <summary>
+    /// Asynchronously returns a stream of <see cref="ExecutionResult"/> responses for the
+    /// specified <see cref="ExecutionNode"/>.
+    /// </summary>
+    protected virtual async Task<IObservable<ExecutionResult>?> ResolveResponseStreamAsync(ExecutionContext context, ExecutionNode node)
+    {
+        context.CancellationToken.ThrowIfCancellationRequested();
+
+        var resolveContext = new ReadonlyResolveFieldContext(node, context);
+
+        IObservable<object?> sourceStream;
+
+        try
         {
-            var streams = new Dictionary<string, IObservable<ExecutionResult>>();
+            var resolver = node.FieldDefinition?.StreamResolver;
 
-            foreach (var kvp in nodes)
+            if (resolver == null)
             {
-                var name = kvp.Key;
-                var node = kvp.Value;
-
-                if (!(node.FieldDefinition is EventStreamFieldType fieldDefinition))
-                    continue;
-
-                streams[name] = await ResolveEventStreamAsync(context, node);
+                // todo: this should be caught by schema validation
+                throw new InvalidOperationException($"Stream resolver not set for field '{node.Field.Name}'.");
             }
 
-            return streams;
+            sourceStream = await resolver.ResolveAsync(resolveContext).ConfigureAwait(false);
+
+            if (sourceStream == null)
+            {
+                throw new InvalidOperationException($"No event stream returned for field '{node.Field.Name}'.");
+            }
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (ExecutionError error)
+        {
+            error.Path = node.ResponsePath;
+            error.AddLocation(node.Field, context.Document);
+            context.Errors.Add(error);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            context.Errors.Add(await HandleExceptionInternalAsync(context, node, exception,
+                $"Could not resolve source stream for field '{node.Field.Name}'.").ConfigureAwait(false));
+            return null;
         }
 
-        protected virtual async Task<IObservable<ExecutionResult>> ResolveEventStreamAsync(ExecutionContext context, ExecutionNode node)
+        // preserve required information from the context
+        var preservedContext = CloneExecutionContext(context, default);
+
+        // cannot throw an exception here
+        return sourceStream
+            .SelectCatchAsync(
+                async (value, token) =>
+                {
+                    // duplicate context to prevent multiple event streams from sharing the same context,
+                    // and clear errors/metrics/extensions. Free array pool leased arrays after execution.
+                    using var childContext = CloneExecutionContext(preservedContext, token);
+
+                    return await ProcessDataAsync(childContext, node, value).ConfigureAwait(false);
+                },
+                async (exception, token) =>
+                {
+                    using var childContext = CloneExecutionContext(preservedContext, token);
+
+                    return await ProcessErrorAsync(childContext, node, exception).ConfigureAwait(false);
+                });
+    }
+
+    /// <summary>
+    /// Clones an execution context without stateful information -- errors, metrics, and output extensions.
+    /// Sets the cancellation token on the cloned context to the specified value.
+    /// <br/><br/>
+    /// Override to clear a stored service provider from being preserved within a cloned execution context.
+    /// </summary>
+    protected virtual ExecutionContext CloneExecutionContext(ExecutionContext context, CancellationToken token) => new(context)
+    {
+        Errors = new ExecutionErrors(),
+        OutputExtensions = new Dictionary<string, object?>(),
+        Metrics = Instrumentation.Metrics.None,
+        CancellationToken = token,
+    };
+
+    /// <summary>
+    /// Processes data from the source stream via <see cref="IObserver{T}.OnNext(T)"/> and
+    /// returns an <see cref="ExecutionResult"/>.
+    /// <br/><br/>
+    /// Override this method to mutate <see cref="ExecutionContext"/> as necessary, such
+    /// as changing the <see cref="ExecutionContext.RequestServices"/> property to a scoped instance.
+    /// </summary>
+    protected virtual async ValueTask<ExecutionResult> ProcessDataAsync(ExecutionContext context, ExecutionNode node, object? value)
+    {
+        var result = new ExecutionResult(context);
+
+        try
         {
-            context.CancellationToken.ThrowIfCancellationRequested();
+            // "clone" the node and set the source
+            // overwrite the 'node' variable here so it is picked up by exception handling code below
+            // and will contain the source from this data event
+            node = BuildSubscriptionExecutionNode(node.Parent!, node.GraphType!, node.Field, node.FieldDefinition, node.IndexInParentNode, value!);
 
-            var arguments = GetArgumentValues(
-                context.Schema,
-                node.FieldDefinition.Arguments,
-                node.Field.Arguments,
-                context.Variables);
+            if (context.Listeners?.Count > 0)
+            {
+                foreach (var listener in context.Listeners)
+                {
+                    await listener.BeforeExecutionAsync(context)
+                        .ConfigureAwait(false);
+                }
+            }
 
-            object source = (node.Parent != null)
-                ? node.Parent.Result
-                : context.RootValue;
+            if (context.Errors.Count > 0)
+            {
+                result.AddErrors(context.Errors);
+                return result;
+            }
+
+            // Execute the whole execution tree and return the result
+            await ExecuteNodeTreeAsync(context, node).ConfigureAwait(false);
 
             try
             {
-                var resolveContext = new ResolveEventStreamContext
+                if (context.Listeners?.Count > 0)
                 {
-                    FieldName = node.Field.Name,
-                    FieldAst = node.Field,
-                    FieldDefinition = node.FieldDefinition,
-                    ReturnType = node.FieldDefinition.ResolvedType,
-                    ParentType = node.GraphType as IObjectGraphType,
-                    Arguments = arguments,
-                    Source = source,
-                    Schema = context.Schema,
-                    Document = context.Document,
-                    Fragments = context.Fragments,
-                    RootValue = context.RootValue,
-                    UserContext = context.UserContext,
-                    Operation = context.Operation,
-                    Variables = context.Variables,
-                    CancellationToken = context.CancellationToken,
-                    Metrics = context.Metrics,
-                    Errors = context.Errors,
-                    Path = node.Path
-                };
-
-                var eventStreamField = node.FieldDefinition as EventStreamFieldType;
-
-
-                IObservable<object> subscription;
-
-                if (eventStreamField?.Subscriber != null)
-                {
-                    subscription = eventStreamField.Subscriber.Subscribe(resolveContext);
-                }
-                else if (eventStreamField?.AsyncSubscriber != null)
-                {
-                    subscription = await eventStreamField.AsyncSubscriber.SubscribeAsync(resolveContext);
-                }
-                else
-                {
-                    throw new InvalidOperationException($"Subscriber not set for field {node.Field.Name}");
-                }
-
-                return subscription
-                    .Select(value => new ObjectExecutionNode(null, node.GraphType, node.Field, node.FieldDefinition, node.Path)
+                    foreach (var listener in context.Listeners)
                     {
-                        Source = value
-                    })
-                    .SelectMany(async objectNode =>
-                    {
-                        // Execute the whole execution tree and return the result
-                        await ExecuteNodeTreeAsync(context, objectNode)
+                        await listener.AfterExecutionAsync(context)
                             .ConfigureAwait(false);
-
-                        return new ExecutionResult
-                        {
-                            Data = new Dictionary<string, object>
-                            {
-                                { objectNode.Name, objectNode.ToValue() }
-                            }
-                        }.With(context);
-                    })
-                    .Catch<ExecutionResult, Exception>(exception =>
-                        Observable.Return(
-                            new ExecutionResult
-                            {
-                                Errors = new ExecutionErrors
-                                {
-                                    GenerateError(
-                                        context,
-                                        $"Could not subscribe to field '{node.Field.Name}' in query '{context.Document.OriginalQuery}'",
-                                        node.Field,
-                                        node.Path,
-                                        exception)
-                                }
-                            }.With(context)));
+                    }
+                }
             }
-            catch (Exception ex)
+            finally
             {
-                var message = $"Error trying to resolve {node.Field.Name}.";
-                var error = GenerateError(context, message, node.Field, node.Path, ex);
-                context.Errors.Add(error);
-                return null;
+                // Set the execution node's value to null if necessary
+                var dataIsNull = node.PropagateNull();
+
+                // Return the result
+                result.Executed = true;
+                if (!dataIsNull || node.FieldDefinition.ResolvedType is not NonNullGraphType)
+                {
+                    result.Data = new RootExecutionNode(null!, null)
+                    {
+                        SubFields = new ExecutionNode[]
+                        {
+                            node,
+                        }
+                    };
+                }
+            }
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            // generate a static error message here;
+            // do not "throw;" back to the caller (the event source)
+            result.AddError(GenerateError(context, node, "The operation was canceled."));
+        }
+        catch (ExecutionError executionError)
+        {
+            executionError.Path = node.ResponsePath;
+            executionError.AddLocation(node.Field, context.Document);
+            result.AddError(executionError);
+        }
+        catch (Exception exception)
+        {
+            result.AddError(await HandleExceptionInternalAsync(context, node, exception,
+                $"Could not process source stream event data for field '{node.Field.Name}'.").ConfigureAwait(false));
+        }
+
+        result.AddErrors(context.Errors);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Encapsulates an error within an <see cref="ExecutionResult"/> for errors generated
+    /// by the event stream via <see cref="IObserver{T}.OnError(Exception)"/>.
+    /// </summary>
+    protected virtual Task<ExecutionError> ProcessErrorAsync(ExecutionContext context, ExecutionNode node, Exception exception)
+        => HandleExceptionInternalAsync(context, node, exception, $"Response stream error for field '{node.Field.Name}'.");
+
+    /// <summary>
+    /// Generates an <see cref="ExecutionError"/> for the specified <see cref="Exception"/>
+    /// and sets the <see cref="ExecutionError.Path"/> and <see cref="ExecutionError.Locations"/> properties.
+    /// </summary>
+    private async Task<ExecutionError> HandleExceptionInternalAsync(ExecutionContext context, ExecutionNode node, Exception exception, string defaultMessage)
+    {
+        var executionError = await HandleExceptionAsync(context, node, exception, defaultMessage).ConfigureAwait(false);
+        executionError.Path = node.ResponsePath;
+        executionError.AddLocation(node.Field, context.Document);
+        return executionError;
+    }
+
+    /// <summary>
+    /// Generates an <see cref="ExecutionError"/> for the specified <see cref="Exception"/>.
+    /// </summary>
+    protected virtual async Task<ExecutionError> HandleExceptionAsync(ExecutionContext context, ExecutionNode node, Exception exception, string defaultMessage)
+    {
+        UnhandledExceptionContext? exceptionContext = null;
+        if (context.UnhandledExceptionDelegate != null)
+        {
+            exceptionContext = new UnhandledExceptionContext(context, new ReadonlyResolveFieldContext(node, context), exception);
+            try
+            {
+                await context.UnhandledExceptionDelegate(exceptionContext).ConfigureAwait(false);
+                exception = exceptionContext.Exception;
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                // absorb OperationCanceledExceptions within the unhandled exception delegate
+                // do not "throw;" back to the caller (the event source)
             }
         }
 
-        private ExecutionError GenerateError(
-            ExecutionContext context,
-            string message,
-            Field field,
-            IEnumerable<string> path,
-            Exception ex = null)
+        if (exception is not ExecutionError executionError)
         {
-            var error = new ExecutionError(message, ex);
-            error.AddLocation(field, context.Document);
-            error.Path = path;
-            return error;
+            executionError = new UnhandledError(exceptionContext?.ErrorMessage ?? defaultMessage, exception);
         }
+
+        return executionError;
     }
 
-    internal static class ExecutionContextExtensions
+    /// <summary>
+    /// Builds an execution node with the specified parameters.
+    /// </summary>
+    protected ExecutionNode BuildSubscriptionExecutionNode(ExecutionNode parent, IGraphType graphType, GraphQLField field, FieldType fieldDefinition, int? indexInParentNode, object source)
     {
-        public static ExecutionResult With(this ExecutionResult result, ExecutionContext context)
+        if (graphType is NonNullGraphType nonNullFieldType)
+            graphType = nonNullFieldType.ResolvedType!;
+
+        return graphType switch
         {
-            result.Query = context.Document.OriginalQuery;
-            result.Document = context.Document;
-            result.Operation = context.Operation;
-            return result;
-        }
+            ListGraphType _ => new SubscriptionArrayExecutionNode(parent, graphType, field, fieldDefinition, indexInParentNode, source),
+            IObjectGraphType _ => new SubscriptionObjectExecutionNode(parent, graphType, field, fieldDefinition, indexInParentNode, source),
+            IAbstractGraphType _ => new SubscriptionObjectExecutionNode(parent, graphType, field, fieldDefinition, indexInParentNode, source),
+            ScalarGraphType scalarGraphType => new SubscriptionValueExecutionNode(parent, scalarGraphType, field, fieldDefinition, indexInParentNode, source),
+            _ => throw new InvalidOperationException($"Unexpected type: {graphType}")
+        };
     }
+
+    private ExecutionError GenerateError(ExecutionContext context, ExecutionNode node, string message, Exception? ex = null)
+        => new ExecutionError(message, ex) { Path = node.ResponsePath }.AddLocation(node.Field, context.Document);
+
+    /// <inheritdoc/>
+    public override Task ExecuteNodeTreeAsync(ExecutionContext context, ExecutionNode rootNode)
+        => _baseExecutionStrategy.ExecuteNodeTreeAsync(context, rootNode);
 }

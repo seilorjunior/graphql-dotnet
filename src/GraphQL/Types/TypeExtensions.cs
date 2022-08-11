@@ -1,83 +1,78 @@
-﻿using System;
-using GraphQL.Language.AST;
+using GraphQLParser.AST;
 
 namespace GraphQL.Types
 {
+    /// <summary>
+    /// Provides helper methods for locating a graph type within a schema from the AST type.
+    /// </summary>
     public static class TypeExtensions
     {
-        public static IGraphType GraphTypeFromType(this IType type, ISchema schema)
+        /// <summary>
+        /// Searches a schema for a graph type specified by an AST type after unwrapping any
+        /// <see cref="GraphQLNonNullType"/> or <see cref="GraphQLListType"/> layers. If the type cannot be
+        /// found, returns <see langword="null"/>.
+        /// </summary>
+        /// <param name="type">The AST type to search for.</param>
+        /// <param name="schema">The schema to search within.</param>
+        public static IGraphType? NamedGraphTypeFromType(this GraphQLType type, ISchema schema) => type switch
         {
-            if (type == null) return null;
+            GraphQLNonNullType nonnull => NamedGraphTypeFromType(nonnull.Type, schema),
+            GraphQLListType list => NamedGraphTypeFromType(list.Type, schema),
+            GraphQLNamedType named => schema.AllTypes[named.Name],
+            _ => null
+        };
 
-            if (type is NonNullType)
+        /// <summary>
+        /// Searches a schema for a graph type specified by an AST type. If the type
+        /// cannot be found, returns <see langword="null"/>.
+        /// </summary>
+        /// <param name="type">The AST type to search for.</param>
+        /// <param name="schema">The schema to search within.</param>
+        public static IGraphType? GraphTypeFromType(this GraphQLType type, ISchema schema)
+        {
+            if (type is GraphQLNonNullType nonnull)
             {
-                var nonnull = (NonNullType)type;
                 var ofType = GraphTypeFromType(nonnull.Type, schema);
-                if(ofType == null)
-                {
-                    return null;
-                }
-                var nonnullGraphType = typeof(NonNullGraphType<>).MakeGenericType(ofType.GetType());
-                var instance = (NonNullGraphType)Activator.CreateInstance(nonnullGraphType);
-                instance.ResolvedType = ofType;
-                return instance;
+                return ofType == null
+                    ? null
+                    : new NonNullGraphType(ofType);
             }
 
-            if (type is ListType)
+            if (type is GraphQLListType list)
             {
-                var list = (ListType)type;
                 var ofType = GraphTypeFromType(list.Type, schema);
-                if(ofType == null)
-                {
-                    return null;
-                }
-                var listGraphType = typeof(ListGraphType<>).MakeGenericType(ofType.GetType());
-                var instance = (ListGraphType)Activator.CreateInstance(listGraphType);
-                instance.ResolvedType = ofType;
-                return instance;
+                return ofType == null
+                    ? null
+                    : new ListGraphType(ofType);
             }
 
-            if (type is NamedType)
-            {
-                var named = (NamedType)type;
-                return schema.FindType(named.Name);
-            }
-
-            return null;
+            return type is GraphQLNamedType named
+                ? schema.AllTypes[named.Name]
+                : null;
         }
 
-        public static string Name(this IType type)
+        /// <summary>
+        /// Returns the name of an AST type after unwrapping any <see cref="GraphQLNonNullType"/> or <see cref="GraphQLListType"/> layers.
+        /// </summary>
+        public static string Name(this GraphQLType type) => type switch
         {
-            if (type is NonNullType)
-            {
-                var nonnull = (NonNullType)type;
-                return Name(nonnull.Type);
-            }
+            GraphQLNonNullType nonnull => Name(nonnull.Type),
+            GraphQLListType list => Name(list.Type),
+            GraphQLNamedType named => named.Name.StringValue, //ISSUE:allocation but used only on error paths
+            _ => throw new NotSupportedException($"Unknown type {type}")
+        };
 
-            if (type is ListType)
-            {
-                var list = (ListType)type;
-                return Name(list.Type);
-            }
-
-            return ((NamedType)type).Name;
-        }
-
-        public static string FullName(this IType type)
+        /// <summary>
+        /// Returns the formatted GraphQL type name of the AST type,
+        /// using brackets and exclamation points as necessary to
+        /// indicate lists or non-null types, respectively.
+        /// </summary>
+        public static string FullName(this GraphQLType type) => type switch
         {
-            if (type is NonNullType)
-            {
-                var nonnull = (NonNullType)type;
-                return "{0}!".ToFormat(FullName(nonnull.Type));
-            }
-
-            if (type is ListType)
-            {
-                var list = (ListType)type;
-                return "[{0}]".ToFormat(FullName(list.Type));
-            }
-
-            return ((NamedType)type).Name;
-        }
+            GraphQLNonNullType nonnull => $"{FullName(nonnull.Type)}!",
+            GraphQLListType list => $"[{FullName(list.Type)}]",
+            GraphQLNamedType named => named.Name.StringValue, //ISSUE:allocation
+            _ => throw new NotSupportedException($"Unknown type {type}")
+        };
     }
 }

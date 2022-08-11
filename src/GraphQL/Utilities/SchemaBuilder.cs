@@ -1,132 +1,184 @@
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using GraphQL.Conversion;
-using GraphQL.Introspection;
+using GraphQL.DI;
+using GraphQL.Reflection;
 using GraphQL.Types;
 using GraphQLParser;
 using GraphQLParser.AST;
-using OperationType = GraphQLParser.AST.OperationType;
 
 namespace GraphQL.Utilities
 {
+    /// <summary>
+    /// Builds schema from string.
+    /// </summary>
     public class SchemaBuilder
     {
-        private readonly IDictionary<string, IGraphType> _types = new Dictionary<string, IGraphType>();
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
+        protected readonly Dictionary<string, IGraphType> _types = new();
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
+        private GraphQLSchemaDefinition? _schemaDef;
 
-        public IDependencyResolver DependencyResolver { get; set; } = new DefaultDependencyResolver();
+        private IgnoreOptions CreateIgnoreOptions()
+        {
+            var options = IgnoreOptions.None;
+            if (IgnoreComments)
+                options |= IgnoreOptions.Comments;
+            if (IgnoreLocations)
+                options |= IgnoreOptions.Locations;
+            return options;
+        }
 
+        /// <summary>
+        /// This <see cref="IServiceProvider"/> is used to create required objects during building schema.
+        /// <br/><br/>
+        /// By default equals to <see cref="DefaultServiceProvider"/>.
+        /// </summary>
+        public IServiceProvider ServiceProvider { get; set; } = new DefaultServiceProvider();
+
+        /// <summary>
+        /// Specifies whether to ignore comments when parsing GraphQL document.
+        /// By default, all comments are ignored.
+        /// </summary>
+        public bool IgnoreComments { get; set; } = true;
+
+        /// <summary>
+        /// Specifies whether to ignore token locations when parsing GraphQL document.
+        /// By default, all token locations are taken into account.
+        /// </summary>
+        public bool IgnoreLocations { get; set; }
+
+        /// <summary>
+        /// Allows to successfully build the schema even if types are found that are not registered int <see cref="Types"/>.
+        /// <br/>
+        /// By default <see langword="true"/>.
+        /// </summary>
+        public bool AllowUnknownTypes { get; set; } = true;
+
+        /// <summary>
+        /// Allows to successfully build the schema even if fields are found that have no resolvers.
+        /// <br/>
+        /// By default <see langword="true"/>.
+        /// </summary>
+        public bool AllowUnknownFields { get; set; } = true;
+
+        /// <inheritdoc cref="TypeSettings" />
         public TypeSettings Types { get; } = new TypeSettings();
 
-        public SchemaBuilder RegisterType(IGraphType type)
-        {
-            _types[type.Name] = type;
-            return this;
-        }
+        /// <summary>
+        /// If <see langword="true"/>, pulls registered <see cref="IConfigureSchema"/>
+        /// instances from <see cref="ServiceProvider"/> and executes them.
+        /// </summary>
+        public bool RunConfigurations { get; set; } = true;
 
-        public void RegisterTypes(IEnumerable<IGraphType> types)
+        /// <summary>
+        /// Builds schema from string.
+        /// </summary>
+        /// <param name="typeDefinitions">A textual description of the schema in SDL (Schema Definition Language) format.</param>
+        /// <returns>Created schema.</returns>
+        public virtual Schema Build(string typeDefinitions)
         {
-            types.Apply(t => _types[t.Name] = t);
-        }
-
-        public ISchema Build(string[] typeDefinitions)
-        {
-            return Build(string.Join(Environment.NewLine, typeDefinitions));
-        }
-
-        public ISchema Build(string typeDefinitions)
-        {
-            var document = Parse(typeDefinitions);
+            var document = Parser.Parse(typeDefinitions, new ParserOptions { Ignore = CreateIgnoreOptions() });
+            Validate(document);
             return BuildSchemaFrom(document);
         }
 
-        private static GraphQLDocument Parse(string document)
+        /// <summary>
+        /// Validate the specified SDL.
+        /// </summary>
+        protected virtual void Validate(GraphQLDocument document)
         {
-            var lexer = new Lexer();
-            var parser = new Parser(lexer);
-            var ast = parser.Parse(new Source(document));
-            return ast;
+            var definitionsByName = document.Definitions.OfType<GraphQLTypeDefinition>().ToLookup(def => def.Name!.Value);
+            var duplicates = definitionsByName.Where(grouping => grouping.Count() > 1).ToArray();
+            if (duplicates.Length > 0)
+            {
+                throw new ArgumentException(@$"All types within a GraphQL schema must have unique names. No two provided types may have the same name.
+Schema contains a redefinition of these types: {string.Join(", ", duplicates.Select(item => item.Key))}", nameof(document));
+            }
+
+            //TODO: checks for parsed SDL may be expanded in the future, see https://github.com/graphql/graphql-spec/issues/653
+            // Also see Schema.Validate
         }
 
-        private ISchema BuildSchemaFrom(GraphQLDocument document)
+        /// <summary>
+        /// Returns a new <see cref="Schema"/> instance.
+        /// </summary>
+        protected virtual Schema CreateSchema() => new(ServiceProvider, runConfigurations: RunConfigurations);
+
+        private Schema BuildSchemaFrom(GraphQLDocument document)
         {
-            var schema = new Schema(DependencyResolver);
+            var schema = CreateSchema();
 
-            var directives = new List<DirectiveGraphType>();
+            PreConfigure(schema);
 
-            GraphQLSchemaDefinition schemaDef = null;
+            var directives = new List<Directive>();
 
             foreach (var def in document.Definitions)
             {
-                switch (def.Kind)
+                if (def is GraphQLSchemaDefinition schemaDef)
                 {
-                    case ASTNodeKind.SchemaDefinition:
-                        schemaDef = def as GraphQLSchemaDefinition;
-                        break;
-
-                    case ASTNodeKind.ObjectTypeDefinition:
+                    _schemaDef = schemaDef;
+                    schema.SetAstType(schemaDef);
+                }
+                else if (def is GraphQLObjectTypeDefinition objDef)
+                {
+                    var type = ToObjectGraphType(objDef);
+                    _types[type.Name] = type;
+                }
+                else if (def is GraphQLObjectTypeExtension ext)
+                {
+                    //TODO: rewrite and add support for other extensions
+                    var typeDef = new GraphQLObjectTypeDefinition
                     {
-                        var type = ToObjectGraphType(def as GraphQLObjectTypeDefinition);
-                        _types[type.Name] = type;
-                        break;
-                    }
-
-                    case ASTNodeKind.TypeExtensionDefinition:
-                    {
-                        var type = ToObjectGraphType((def as GraphQLTypeExtensionDefinition).Definition, true);
-                        _types[type.Name] = type;
-                        break;
-                    }
-
-                    case ASTNodeKind.InterfaceTypeDefinition:
-                    {
-                        var type = ToInterfaceType(def as GraphQLInterfaceTypeDefinition);
-                        _types[type.Name] = type;
-                        break;
-                    }
-
-                    case ASTNodeKind.EnumTypeDefinition:
-                    {
-                        var type = ToEnumerationType(def as GraphQLEnumTypeDefinition);
-                        _types[type.Name] = type;
-                        break;
-                    }
-
-                    case ASTNodeKind.UnionTypeDefinition:
-                    {
-                        var type = ToUnionType(def as GraphQLUnionTypeDefinition);
-                        _types[type.Name] = type;
-                        break;
-                    }
-
-                    case ASTNodeKind.InputObjectTypeDefinition:
-                    {
-                        var type = ToInputObjectType(def as GraphQLInputObjectTypeDefinition);
-                        _types[type.Name] = type;
-                        break;
-                    }
-
-                    case ASTNodeKind.DirectiveDefinition:
-                    {
-                        var directive = ToDirective(def as GraphQLDirectiveDefinition);
-                        directives.Add(directive);
-                        break;
-                    }
+                        Comments = ext.Comments,
+                        Description = null,
+                        Directives = ext.Directives,
+                        Fields = ext.Fields,
+                        Interfaces = ext.Interfaces,
+                        Location = ext.Location,
+                        Name = ext.Name,
+                    };
+                    var type = ToObjectGraphType(typeDef, true);
+                    _types[type.Name] = type;
+                }
+                else if (def is GraphQLInterfaceTypeDefinition ifaceDef)
+                {
+                    var type = ToInterfaceType(ifaceDef);
+                    _types[type.Name] = type;
+                }
+                else if (def is GraphQLEnumTypeDefinition enumDef)
+                {
+                    var type = ToEnumerationType(enumDef);
+                    _types[type.Name] = type;
+                }
+                else if (def is GraphQLUnionTypeDefinition unionDef)
+                {
+                    var type = ToUnionType(unionDef);
+                    _types[type.Name] = type;
+                }
+                else if (def is GraphQLInputObjectTypeDefinition inputDef)
+                {
+                    var type = ToInputObjectType(inputDef);
+                    _types[type.Name] = type;
+                }
+                else if (def is GraphQLDirectiveDefinition directiveDef)
+                {
+                    var directive = ToDirective(directiveDef);
+                    directives.Add(directive);
                 }
             }
 
-            if (schemaDef != null)
+            if (_schemaDef != null)
             {
-                foreach (var op in schemaDef.OperationTypes)
+                schema.Description = _schemaDef.MergeComments();
+
+                foreach (var operationTypeDef in _schemaDef.OperationTypes!)
                 {
-                    var typeName = op.Type.Name.Value;
+                    var typeName = (string)operationTypeDef.Type!.Name; //TODO:alloc
                     var type = GetType(typeName) as IObjectGraphType;
 
-                    switch (op.Operation)
+                    switch (operationTypeDef.Operation)
                     {
                         case OperationType.Query:
-                            schema.Query = type;
+                            schema.Query = type!;
                             break;
 
                         case OperationType.Mutation:
@@ -138,256 +190,428 @@ namespace GraphQL.Utilities
                             break;
 
                         default:
-                            throw new ArgumentOutOfRangeException($"Unknown operation type {op.Operation}");
+                            throw new ArgumentOutOfRangeException($"Unknown operation type {operationTypeDef.Operation}");
                     }
                 }
             }
             else
             {
-                schema.Query = GetType("Query") as IObjectGraphType;
+                schema.Query = (GetType("Query") as IObjectGraphType)!;
                 schema.Mutation = GetType("Mutation") as IObjectGraphType;
                 schema.Subscription = GetType("Subscription") as IObjectGraphType;
             }
 
-            var typeList = _types.Values.ToArray();
-            typeList.Apply(schema.RegisterType);
-            schema.RegisterDirectives(directives.ToArray());
+            foreach (var type in _types)
+                schema.RegisterType(type.Value);
 
+            foreach (var directive in directives)
+                schema.Directives.Register(directive);
+
+            Debug.Assert(schema.Initialized == false);
             return schema;
         }
 
-        protected virtual IGraphType GetType(string name)
+        /// <summary>
+        /// Configures the <paramref name="schema"/> prior to adding any types.
+        /// </summary>
+        protected virtual void PreConfigure(Schema schema)
         {
-            _types.TryGetValue(name, out IGraphType type);
-            return type;
         }
 
+        /// <summary>
+        /// Returns the graph type built for the specified graph type name.
+        /// </summary>
+        protected virtual IGraphType? GetType(string name)
+        {
+            return _types.TryGetValue(name, out var type) ? type : null;
+        }
+
+        private bool IsSubscriptionType(ObjectGraphType type)
+        {
+            var operationDefinition = _schemaDef?.OperationTypes?.FirstOrDefault(o => o.Operation == OperationType.Subscription);
+            return operationDefinition == null
+                ? type.Name == "Subscription"
+                : type.Name == operationDefinition.Type!.Name;
+        }
+
+        private void AssertKnownType(TypeConfig typeConfig)
+        {
+            if (typeConfig.Type == null && !AllowUnknownTypes)
+                throw new InvalidOperationException($"Unknown type '{typeConfig.Name}'. Verify that you have configured SchemaBuilder correctly.");
+        }
+
+        private void AssertKnownField(FieldConfig fieldConfig, TypeConfig typeConfig)
+        {
+            if (fieldConfig.Resolver == null && !AllowUnknownFields)
+                throw new InvalidOperationException($"Unknown field '{typeConfig.Name}.{fieldConfig.Name}' has no resolver. Verify that you have configured SchemaBuilder correctly.");
+        }
+
+        private void OverrideDeprecationReason(IProvideDeprecationReason element, string? reason)
+        {
+            if (reason != null)
+                element.DeprecationReason = reason;
+        }
+
+        /// <summary>
+        /// Returns an <see cref="IObjectGraphType"/> from the specified <see cref="GraphQLObjectTypeDefinition"/>.
+        /// </summary>
         protected virtual IObjectGraphType ToObjectGraphType(GraphQLObjectTypeDefinition astType, bool isExtensionType = false)
         {
-            var typeConfig = Types.For(astType.Name.Value);
+            var name = (string)astType.Name; //TODO:alloc
+            var typeConfig = Types.For(name);
 
-            ObjectGraphType type;
-            if (!_types.ContainsKey(astType.Name.Value))
-            {
-                type = new ObjectGraphType {Name = astType.Name.Value};
-            }
-            else
-            {
-                type = _types[astType.Name.Value] as ObjectGraphType;
-            }
+            AssertKnownType(typeConfig);
+
+            var type = _types.TryGetValue(name, out var t)
+                ? t as ObjectGraphType ?? throw new InvalidOperationException($"Type '{name} should be ObjectGraphType")
+                : new ObjectGraphType { Name = name };
 
             if (!isExtensionType)
             {
-                type.Description = typeConfig.Description;
+                type.Description = typeConfig.Description ?? astType.Description?.Value.ToString() ?? astType.MergeComments();
                 type.IsTypeOf = typeConfig.IsTypeOfFunc;
-
-                ApplyDeprecatedDirective(astType.Directives, reason =>
-                {
-                    type.DeprecationReason = typeConfig.DeprecationReason ?? reason;
-                });
             }
 
-            CopyMetadata(type, typeConfig);
+            typeConfig.CopyMetadataTo(type);
 
-            var fields = astType.Fields.Select(f => ToFieldType(type.Name, f));
-            fields.Apply(f =>
+            Func<string, GraphQLFieldDefinition, FieldType> constructFieldType = IsSubscriptionType(type)
+                ? ToSubscriptionFieldType
+                : ToFieldType;
+
+            if (astType.Fields != null)
             {
-                type.AddField(f);
-            });
+                foreach (var f in astType.Fields)
+                    type.AddField(constructFieldType(type.Name, f));
+            }
 
-            var interfaces = astType
-                .Interfaces
-                .Select(i => new GraphQLTypeReference(i.Name.Value))
-                .ToList();
-            interfaces.Apply(type.AddResolvedInterface);
+            if (astType.Interfaces != null)
+            {
+                foreach (var i in astType.Interfaces)
+                    type.AddResolvedInterface(new GraphQLTypeReference((string)i.Name)); //TODO:alloc
+            }
+
+            if (isExtensionType)
+            {
+                type.AddExtensionAstType(astType);
+            }
+            else
+            {
+                type.SetAstType(astType);
+                OverrideDeprecationReason(type, typeConfig.DeprecationReason);
+            }
 
             return type;
         }
 
+        private void InitializeField(FieldConfig config, Type? parentType)
+        {
+            config.ResolverAccessor ??= parentType.ToAccessor(config.Name, ResolverType.Resolver);
+
+            if (config.ResolverAccessor != null)
+            {
+                config.Resolver = AutoRegisteringHelper.BuildFieldResolver(
+                    config.ResolverAccessor.MethodInfo,
+                    null, // unknown source type
+                    null, // unknown FieldType
+                    AutoRegisteringHelper.BuildInstanceExpressionForSchemaBuilder(config.ResolverAccessor.DeclaringType, ServiceProvider));
+
+                var attrs = config.ResolverAccessor.GetAttributes<GraphQLAttribute>();
+                if (attrs != null)
+                {
+                    foreach (var a in attrs)
+                        a.Modify(config);
+                }
+            }
+        }
+
+        private void InitializeSubscriptionField(FieldConfig config, Type? parentType)
+        {
+            config.ResolverAccessor ??= parentType.ToAccessor(config.Name, ResolverType.Resolver);
+            config.StreamResolverAccessor ??= parentType.ToAccessor(config.Name, ResolverType.StreamResolver);
+
+            if (config.ResolverAccessor != null && config.StreamResolverAccessor != null)
+            {
+                config.Resolver = AutoRegisteringHelper.BuildFieldResolver(
+                    config.ResolverAccessor.MethodInfo,
+                    null, // unknown source type
+                    null, // unknown FieldType
+                    AutoRegisteringHelper.BuildInstanceExpressionForSchemaBuilder(config.ResolverAccessor.DeclaringType, ServiceProvider));
+
+                var attrs = config.ResolverAccessor.GetAttributes<GraphQLAttribute>();
+                if (attrs != null)
+                {
+                    foreach (var a in attrs)
+                        a.Modify(config);
+                }
+
+                config.StreamResolver = AutoRegisteringHelper.BuildSourceStreamResolver(
+                    config.StreamResolverAccessor.MethodInfo,
+                    null, // unknown source type
+                    null, // unknown FieldType
+                    AutoRegisteringHelper.BuildInstanceExpressionForSchemaBuilder(config.ResolverAccessor.DeclaringType, ServiceProvider));
+            }
+        }
+
+        /// <summary>
+        /// Returns a <see cref="FieldType"/> from the specified <see cref="GraphQLFieldDefinition"/>.
+        /// </summary>
         protected virtual FieldType ToFieldType(string parentTypeName, GraphQLFieldDefinition fieldDef)
         {
             var typeConfig = Types.For(parentTypeName);
-            var fieldConfig = typeConfig.FieldFor(fieldDef.Name.Value, DependencyResolver);
 
-            var field = new FieldType();
-            field.Name = fieldDef.Name.Value;
-            field.Description = fieldConfig.Description;
-            field.ResolvedType = ToGraphType(fieldDef.Type);
-            field.Resolver = fieldConfig.Resolver;
+            AssertKnownType(typeConfig);
 
-            CopyMetadata(field, fieldConfig);
+            var fieldConfig = typeConfig.FieldFor((string)fieldDef.Name); //TODO:alloc
+            InitializeField(fieldConfig, typeConfig.Type);
 
-            var args = fieldDef.Arguments.Select(ToArguments);
-            field.Arguments = new QueryArguments(args);
+            AssertKnownField(fieldConfig, typeConfig);
 
-            ApplyDeprecatedDirective(fieldDef.Directives, reason =>
+            var field = new FieldType
             {
-                field.DeprecationReason = fieldConfig.DeprecationReason ?? reason;
-            });
+                Name = fieldConfig.Name,
+                Description = fieldConfig.Description ?? fieldDef.Description?.Value.ToString() ?? fieldDef.MergeComments(),
+                ResolvedType = ToGraphType(fieldDef.Type!),
+                Resolver = fieldConfig.Resolver
+            };
+
+            fieldConfig.CopyMetadataTo(field);
+
+            field.Arguments = ToQueryArguments(fieldConfig, fieldDef.Arguments?.Items);
+
+            field.SetAstType(fieldDef);
+            OverrideDeprecationReason(field, fieldConfig.DeprecationReason);
 
             return field;
         }
 
-        private static string DeprecatedDefaultValue = DirectiveGraphType.Deprecated.Arguments.Find("reason").DefaultValue.ToString();
-        private void ApplyDeprecatedDirective(IEnumerable<GraphQLDirective> directives, Action<string> apply)
+        /// <summary>
+        /// Returns a subscription <see cref="FieldType"/> from the specified <see cref="GraphQLFieldDefinition"/>.
+        /// </summary>
+        protected virtual FieldType ToSubscriptionFieldType(string parentTypeName, GraphQLFieldDefinition fieldDef)
         {
-            var deprecated = directives.Directive("deprecated");
+            var typeConfig = Types.For(parentTypeName);
 
-            if(deprecated != null)
+            AssertKnownType(typeConfig);
+
+            var fieldConfig = typeConfig.FieldFor((string)fieldDef.Name); //TODO:alloc
+            InitializeSubscriptionField(fieldConfig, typeConfig.Type);
+
+            AssertKnownField(fieldConfig, typeConfig);
+
+            var field = new FieldType
             {
-                var arg = deprecated.Arguments.Argument("reason");
-                var value = "";
+                Name = fieldConfig.Name,
+                Description = fieldConfig.Description ?? fieldDef.Description?.Value.ToString() ?? fieldDef.MergeComments(),
+                ResolvedType = ToGraphType(fieldDef.Type!),
+                Resolver = fieldConfig.Resolver,
+                StreamResolver = fieldConfig.StreamResolver,
+            };
 
-                if(arg != null)
-                {
-                    value = ToValue(arg.Value).ToString();
-                }
+            fieldConfig.CopyMetadataTo(field);
 
-                if(string.IsNullOrWhiteSpace(value))
-                {
-                    value = DeprecatedDefaultValue;
-                }
+            field.Arguments = ToQueryArguments(fieldConfig, fieldDef.Arguments?.Items);
 
-                apply(value);
-            }
+            field.SetAstType(fieldDef);
+            OverrideDeprecationReason(field, fieldConfig.DeprecationReason);
+
+            return field;
         }
 
+        /// <summary>
+        /// Returns a <see cref="FieldType"/> from the specified <see cref="GraphQLInputValueDefinition"/>.
+        /// </summary>
         protected virtual FieldType ToFieldType(string parentTypeName, GraphQLInputValueDefinition inputDef)
         {
-            var field = new FieldType();
-            field.Name = inputDef.Name.Value;
-            field.ResolvedType = ToGraphType(inputDef.Type);
-            field.DefaultValue = ToValue(inputDef.DefaultValue);
+            var typeConfig = Types.For(parentTypeName);
 
-            ApplyDeprecatedDirective(inputDef.Directives, reason =>
+            AssertKnownType(typeConfig);
+
+            var fieldConfig = typeConfig.FieldFor((string)inputDef.Name); //TODO:alloc
+            InitializeField(fieldConfig, typeConfig.Type);
+
+            AssertKnownField(fieldConfig, typeConfig);
+
+            var field = new FieldType
             {
-                field.DeprecationReason = reason;
-            });
+                Name = fieldConfig.Name,
+                Description = fieldConfig.Description ?? inputDef.Description?.Value.ToString() ?? inputDef.MergeComments(),
+                ResolvedType = ToGraphType(inputDef.Type!),
+                DefaultValue = fieldConfig.DefaultValue ?? inputDef.DefaultValue
+            }.SetAstType(inputDef);
+
+            OverrideDeprecationReason(field, fieldConfig.DeprecationReason);
 
             return field;
         }
 
+        /// <summary>
+        /// Returns a <see cref="InterfaceGraphType"/> from the specified <see cref="GraphQLInterfaceTypeDefinition"/>.
+        /// </summary>
         protected virtual InterfaceGraphType ToInterfaceType(GraphQLInterfaceTypeDefinition interfaceDef)
         {
-            var typeConfig = Types.For(interfaceDef.Name.Value);
+            var name = (string)interfaceDef.Name; //TODO:alloc
+            var typeConfig = Types.For(name);
 
-            var type = new InterfaceGraphType();
-            type.Name = interfaceDef.Name.Value;
-            type.Description = typeConfig.Description;
-            type.ResolveType = typeConfig.ResolveType;
+            AssertKnownType(typeConfig);
 
-            ApplyDeprecatedDirective(interfaceDef.Directives, reason =>
+            var type = new InterfaceGraphType
             {
-                type.DeprecationReason = typeConfig.DeprecationReason ?? reason;
-            });
+                Name = name,
+                Description = typeConfig.Description ?? interfaceDef.Description?.Value.ToString() ?? interfaceDef.MergeComments(),
+                ResolveType = typeConfig.ResolveType,
+            }.SetAstType(interfaceDef);
 
-            CopyMetadata(type, typeConfig);
+            OverrideDeprecationReason(type, typeConfig.DeprecationReason);
 
-            var fields = interfaceDef.Fields.Select(f => ToFieldType(type.Name, f));
-            fields.Apply(f => type.AddField(f));
+            typeConfig.CopyMetadataTo(type);
 
-            return type;
-        }
-
-        protected virtual UnionGraphType ToUnionType(GraphQLUnionTypeDefinition unionDef)
-        {
-            var typeConfig = Types.For(unionDef.Name.Value);
-
-            var type = new UnionGraphType();
-            type.Name = unionDef.Name.Value;
-            type.Description = typeConfig.Description;
-            type.ResolveType = typeConfig.ResolveType;
-
-            ApplyDeprecatedDirective(unionDef.Directives, reason =>
+            if (interfaceDef.Fields != null)
             {
-                type.DeprecationReason = typeConfig.DeprecationReason ?? reason;
-            });
-
-            CopyMetadata(type, typeConfig);
-
-            var possibleTypes = unionDef.Types.Select(x => GetType(x.Name.Value));
-            possibleTypes.Apply(x => type.AddPossibleType(x as IObjectGraphType));
-            return type;
-        }
-
-        protected virtual InputObjectGraphType ToInputObjectType(GraphQLInputObjectTypeDefinition inputDef)
-        {
-            var type = new InputObjectGraphType();
-            type.Name = inputDef.Name.Value;
-
-            ApplyDeprecatedDirective(inputDef.Directives, reason =>
-            {
-                type.DeprecationReason = reason;
-            });
-
-            var fields = inputDef.Fields.Select(x => ToFieldType(type.Name, x));
-            fields.Apply(f => type.AddField(f));
-
-            return type;
-        }
-
-        protected virtual EnumerationGraphType ToEnumerationType(GraphQLEnumTypeDefinition enumDef)
-        {
-            var type = new EnumerationGraphType();
-            type.Name = enumDef.Name.Value;
-
-            ApplyDeprecatedDirective(enumDef.Directives, reason =>
-            {
-                type.DeprecationReason = reason;
-            });
-
-            var values = enumDef.Values.Select(ToEnumValue);
-            values.Apply(type.AddValue);
-            return type;
-        }
-
-        protected virtual DirectiveGraphType ToDirective(GraphQLDirectiveDefinition directiveDef)
-        {
-            var locations = directiveDef.Locations.Select(l => ToDirectiveLocation(l.Value));
-            var directive = new DirectiveGraphType(directiveDef.Name.Value, locations);
-
-            var arguments = directiveDef.Arguments.Select(ToArguments);
-            directive.Arguments = new QueryArguments(arguments);
-
-            return directive;
-        }
-
-        private DirectiveLocation ToDirectiveLocation(string name)
-        {
-            var enums = new __DirectiveLocation();
-            var result = enums.ParseValue(name);
-            if (result != null)
-            {
-                return (DirectiveLocation) result;
+                foreach (var f in interfaceDef.Fields)
+                    type.AddField(ToFieldType(type.Name, f));
             }
 
-            throw new ExecutionError($"{name} is an unknown directive location");
+            return type;
         }
 
-        private EnumValueDefinition ToEnumValue(GraphQLEnumValueDefinition valDef)
+        /// <summary>
+        /// Returns a <see cref="UnionGraphType"/> from the specified <see cref="GraphQLUnionTypeDefinition"/>.
+        /// </summary>
+        protected virtual UnionGraphType ToUnionType(GraphQLUnionTypeDefinition unionDef)
         {
-            var val = new EnumValueDefinition();
-            val.Value = valDef.Name.Value;
-            val.Name = valDef.Name.Value;
+            var name = (string)unionDef.Name; //TODO:alloc
+            var typeConfig = Types.For(name);
 
-            ApplyDeprecatedDirective(valDef.Directives, reason =>
+            AssertKnownType(typeConfig);
+
+            var type = new UnionGraphType
             {
-                val.DeprecationReason = reason;
-            });
+                Name = name,
+                Description = typeConfig.Description ?? unionDef.Description?.Value.ToString() ?? unionDef.MergeComments(),
+                ResolveType = typeConfig.ResolveType,
+            }.SetAstType(unionDef);
 
-            return val;
+            OverrideDeprecationReason(type, typeConfig.DeprecationReason);
+
+            typeConfig.CopyMetadataTo(type);
+
+            if (unionDef.Types?.Count > 0) // just in case
+            {
+                foreach (var x in unionDef.Types)
+                {
+                    string n = (string)x.Name; //TODO:alloc
+                    type.AddPossibleType(((GetType(n) ?? new GraphQLTypeReference(n)) as IObjectGraphType)!);
+                }
+            }
+
+            return type;
         }
 
-        protected virtual QueryArgument ToArguments(GraphQLInputValueDefinition inputDef)
+        /// <summary>
+        /// Returns an <see cref="InputObjectGraphType"/> from the specified <see cref="GraphQLInputObjectTypeDefinition"/>.
+        /// </summary>
+        protected virtual InputObjectGraphType ToInputObjectType(GraphQLInputObjectTypeDefinition inputDef)
         {
-            var type = ToGraphType(inputDef.Type);
+            var name = (string)inputDef.Name; //TODO:alloc
+            var typeConfig = Types.For(name);
 
-            var arg = new QueryArgument(type);
-            arg.Name = inputDef.Name.Value;
-            arg.DefaultValue = ToValue(inputDef.DefaultValue);
-            arg.ResolvedType = ToGraphType(inputDef.Type);
+            AssertKnownType(typeConfig);
 
-            return arg;
+            var type = new InputObjectGraphType
+            {
+                Name = name,
+                Description = typeConfig.Description ?? inputDef.Description?.Value.ToString() ?? inputDef.MergeComments(),
+            }.SetAstType(inputDef);
+
+            OverrideDeprecationReason(type, typeConfig.DeprecationReason);
+
+            typeConfig.CopyMetadataTo(type);
+
+            if (inputDef.Fields != null)
+            {
+                foreach (var f in inputDef.Fields)
+                    type.AddField(ToFieldType(type.Name, f));
+            }
+
+            return type;
+        }
+
+        /// <summary>
+        /// Returns an <see cref="EnumerationGraphType"/> from the specified <see cref="GraphQLEnumTypeDefinition"/>.
+        /// </summary>
+        protected virtual EnumerationGraphType ToEnumerationType(GraphQLEnumTypeDefinition enumDef)
+        {
+            var name = (string)enumDef.Name; //TODO:alloc
+            var typeConfig = Types.For(name);
+
+            AssertKnownType(typeConfig);
+
+            var type = new EnumerationGraphType
+            {
+                Name = name,
+                Description = typeConfig.Description ?? enumDef.Description?.Value.ToString() ?? enumDef.MergeComments(),
+            }.SetAstType(enumDef);
+
+            OverrideDeprecationReason(type, typeConfig.DeprecationReason);
+
+            if (enumDef.Values?.Count > 0) // just in case
+            {
+                foreach (var value in enumDef.Values)
+                    type.Add(ToEnumValue(value, typeConfig.Type!));
+            }
+
+            return type;
+        }
+
+        /// <summary>
+        /// Returns a <see cref="Directive"/> from the specified <see cref="GraphQLDirectiveDefinition"/>.
+        /// </summary>
+        protected virtual Directive ToDirective(GraphQLDirectiveDefinition directiveDef)
+        {
+            var result = new Directive(directiveDef.Name.StringValue) //ISSUE:allocation
+            {
+                Description = directiveDef.Description?.Value.ToString() ?? directiveDef.MergeComments(),
+                Repeatable = directiveDef.Repeatable,
+                Arguments = ToQueryArguments(directiveDef.Arguments?.Items)
+            };
+
+            if (directiveDef.Locations.Items.Count > 0) // just in case
+            {
+                foreach (var location in directiveDef.Locations.Items)
+                {
+                    result.Locations.Add(location);
+                }
+            }
+
+            return result;
+        }
+
+        private EnumValueDefinition ToEnumValue(GraphQLEnumValueDefinition valDef, Type enumType)
+        {
+            var name = (string)valDef.Name; //TODO:alloc
+            return new EnumValueDefinition(name, enumType == null ? name : Enum.Parse(enumType, name, true))
+            {
+                Description = valDef.Description?.Value.ToString() ?? valDef.MergeComments()
+                // TODO: SchemaFirst configuration (TypeConfig/FieldConfig) does not allow to specify DeprecationReason for enum values
+                //DeprecationReason = ???
+            }.SetAstType(valDef);
+        }
+
+        /// <summary>
+        /// Returns a <see cref="QueryArgument"/> from the specified <see cref="GraphQLInputValueDefinition"/>.
+        /// </summary>
+        protected virtual QueryArgument ToArgument(ArgumentConfig argumentConfig, GraphQLInputValueDefinition inputDef)
+        {
+            var argument = new QueryArgument(ToGraphType(inputDef.Type!))
+            {
+                Name = argumentConfig.Name,
+                DefaultValue = argumentConfig.DefaultValue ?? inputDef.DefaultValue,
+                Description = argumentConfig.Description ?? inputDef.Description?.Value.ToString() ?? inputDef.MergeComments()
+            }.SetAstType(inputDef);
+
+            argumentConfig.CopyMetadataTo(argument);
+
+            return argument;
         }
 
         private IGraphType ToGraphType(GraphQLType astType)
@@ -396,124 +620,38 @@ namespace GraphQL.Utilities
             {
                 case ASTNodeKind.NonNullType:
                 {
-                    var type = ToGraphType(((GraphQLNonNullType)astType).Type);
+                    var type = ToGraphType(((GraphQLNonNullType)astType).Type!);
                     return new NonNullGraphType(type);
                 }
 
                 case ASTNodeKind.ListType:
                 {
-                    var type = ToGraphType(((GraphQLListType)astType).Type);
+                    var type = ToGraphType(((GraphQLListType)astType).Type!);
                     return new ListGraphType(type);
                 }
 
                 case ASTNodeKind.NamedType:
                 {
                     var namedType = (GraphQLNamedType)astType;
-                    var type = GetType(namedType.Name.Value);
-                    return type ?? new GraphQLTypeReference(namedType.Name.Value);
+                    var name = (string)namedType.Name; //TODO:alloc
+                    var type = GetType(name);
+                    return type ?? new GraphQLTypeReference(name);
                 }
+
+                default:
+                    throw new ArgumentOutOfRangeException($"Unknown GraphQL type {astType.Kind}");
             }
-
-            throw new ArgumentOutOfRangeException($"Unknown GraphQL type {astType.Kind}");
         }
 
-        private object ToValue(GraphQLValue source)
+        //TODO: add support for directive arguments
+        private QueryArguments ToQueryArguments(List<GraphQLInputValueDefinition>? arguments)
         {
-            if (source == null)
-            {
-                return null;
-            }
-
-            switch (source.Kind)
-            {
-                case ASTNodeKind.StringValue:
-                {
-                    var str = source as GraphQLScalarValue;
-                    Debug.Assert(str != null, nameof(str) + " != null");
-                    return str.Value;
-                }
-                case ASTNodeKind.IntValue:
-                {
-                    var str = source as GraphQLScalarValue;
-
-                    Debug.Assert(str != null, nameof(str) + " != null");
-                    if (int.TryParse(str.Value, out var intResult))
-                    {
-                        return intResult;
-                    }
-
-                    // If the value doesn't fit in an integer, revert to using long...
-                    if (long.TryParse(str.Value, out var longResult))
-                    {
-                        return longResult;
-                    }
-
-                    throw new ExecutionError($"Invalid number {str.Value}");
-                }
-                case ASTNodeKind.FloatValue:
-                {
-                    var str = source as GraphQLScalarValue;
-                    Debug.Assert(str != null, nameof(str) + " != null");
-                    return ValueConverter.ConvertTo<double>(str.Value);
-                }
-                case ASTNodeKind.BooleanValue:
-                {
-                    var str = source as GraphQLScalarValue;
-                    Debug.Assert(str != null, nameof(str) + " != null");
-                    return ValueConverter.ConvertTo<bool>(str.Value);
-                }
-                case ASTNodeKind.EnumValue:
-                {
-                    var str = source as GraphQLScalarValue;
-                    Debug.Assert(str != null, nameof(str) + " != null");
-                    return str.Value;
-                }
-                case ASTNodeKind.ObjectValue:
-                {
-                    var obj = source as GraphQLObjectValue;
-                    var values = new Dictionary<string, object>();
-
-                    Debug.Assert(obj != null, nameof(obj) + " != null");
-                    obj.Fields.Apply(f =>
-                    {
-                        values[f.Name.Value] = ToValue(f.Value);
-                    });
-
-                    return values;
-                }
-                case ASTNodeKind.ListValue:
-                {
-                    var list = source as GraphQLListValue;
-                    Debug.Assert(list != null, nameof(list) + " != null");
-                    var values = list.Values.Select(ToValue).ToArray();
-                    return values;
-                }
-            }
-
-            throw new ExecutionError($"Unsupported value type {source.Kind}");
+            return arguments == null ? new QueryArguments() : new QueryArguments(arguments.Select(a => ToArgument(new ArgumentConfig((string)a.Name), a))); //TODO:alloc
         }
 
-        protected virtual void CopyMetadata(IProvideMetadata target, IProvideMetadata source)
+        private QueryArguments ToQueryArguments(FieldConfig fieldConfig, List<GraphQLInputValueDefinition>? arguments)
         {
-            source.Metadata.Apply(kv =>
-            {
-                target.Metadata[kv.Key] = kv.Value;
-            });
-        }
-    }
-
-    internal static class SchemaExtensions
-    {
-        public static GraphQLDirective Directive(this IEnumerable<GraphQLDirective> directives, string name)
-        {
-            return directives?.FirstOrDefault(
-                x => string.Equals(x.Name.Value, name, StringComparison.OrdinalIgnoreCase));
-        }
-
-        public static GraphQLArgument Argument(this IEnumerable<GraphQLArgument> arguments, string name)
-        {
-            return arguments?.FirstOrDefault(
-                x => string.Equals(x.Name.Value, name, StringComparison.OrdinalIgnoreCase));
+            return arguments == null ? new QueryArguments() : new QueryArguments(arguments.Select(a => ToArgument(fieldConfig.ArgumentFor((string)a.Name), a))); //TODO:alloc
         }
     }
 }

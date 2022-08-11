@@ -1,84 +1,112 @@
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
+using GraphQL.Utilities;
 
 namespace GraphQL.Types
 {
-    public abstract class GraphType : IGraphType
+    /// <summary>
+    /// Represents a graph type.
+    /// </summary>
+    public abstract class GraphType : MetadataProvider, IGraphType
     {
-        public string Name { get; set; }
+        private string _name;
 
-        public string Description { get; set; }
-
-        public string DeprecationReason { get; set; }
-
-        public IDictionary<string, object> Metadata { get; set; } = new ConcurrentDictionary<string, object>();
-
-        public TType GetMetadata<TType>(string key, TType defaultValue = default(TType))
+        /// <summary>
+        /// Initializes a new instance of the graph type.
+        /// </summary>
+#pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
+        protected GraphType()
+#pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
         {
-            if (!HasMetadata(key))
+            if (!IsTypeModifier) // specification requires name must be null for these types
             {
-                return defaultValue;
+                // GraphType must always have a valid name so set it to default name in constructor
+                // and skip validation only for well-known types including introspection.
+                // This name can be always changed later to any valid value.
+                SetName(GetDefaultName(), validate: GetType().Assembly != typeof(GraphType).Assembly);
+            }
+        }
+
+        private bool IsTypeModifier => this is ListGraphType || this is NonNullGraphType; // lgtm [cs/type-test-of-this]
+
+        private string GetDefaultName()
+        {
+            var type = GetType();
+
+            string name = type.Name;
+            if (GlobalSwitches.UseDeclaringTypeNames)
+            {
+                var parent = type.DeclaringType;
+                while (parent != null)
+                {
+                    name = parent.Name + "_" + name;
+                    parent = parent.DeclaringType;
+                }
             }
 
-            object item;
-            if (Metadata.TryGetValue(key, out item))
+            name = name.Replace('`', '_');
+            if (name.EndsWith(nameof(GraphType), StringComparison.InvariantCulture))
+                name = name.Substring(0, name.Length - nameof(GraphType).Length);
+
+            return name;
+        }
+
+        internal void SetName(string name, bool validate)
+        {
+            if (_name != name)
             {
-                return (TType) item;
+                if (validate)
+                {
+                    NameValidator.ValidateName(name, NamedElement.Type);
+
+                    if (IsTypeModifier)
+                        throw new ArgumentOutOfRangeException(nameof(name), "A type modifier (List, NonNull) name must be null");
+                }
+
+                _name = name;
             }
-
-            return defaultValue;
         }
 
-        public bool HasMetadata(string key)
+        /// <inheritdoc/>
+        public string Name
         {
-            return Metadata?.ContainsKey(key) ?? false;
+            get => _name;
+            set => SetName(value, validate: true);
         }
 
-        public virtual string CollectTypes(TypeCollectionContext context)
-        {
-            if (string.IsNullOrWhiteSpace(Name))
-            {
-                Name = GetType().Name;
-            }
+        /// <inheritdoc/>
+        public string? Description { get; set; }
 
-            return Name;
+        /// <inheritdoc/>
+        public string? DeprecationReason
+        {
+            get => this.GetDeprecationReason();
+            set => this.SetDeprecationReason(value);
         }
 
-        protected bool Equals(IGraphType other)
-        {
-            return string.Equals(Name, other.Name);
-        }
+        /// <inheritdoc />
+        public override string ToString() => Name;
 
-        public override bool Equals(object obj)
+        /// <summary>
+        /// Determines if the name of the specified graph type is equal to the name of this graph type.
+        /// </summary>
+        protected bool Equals(IGraphType other) => string.Equals(Name, other.Name, StringComparison.InvariantCulture);
+
+        /// <summary>
+        /// Determines if the graph type is equal to the specified object,
+        /// or if the name of the specified graph type is equal to the name of this graph type.
+        /// </summary>
+        public override bool Equals(object? obj)
         {
-            if (ReferenceEquals(null, obj)) return false;
-            if (ReferenceEquals(this, obj)) return true;
-            if (obj.GetType() != GetType()) return false;
+            if (obj is null)
+                return false;
+            if (ReferenceEquals(this, obj))
+                return true;
+            if (obj.GetType() != GetType())
+                return false;
 
             return Equals((IGraphType)obj);
         }
 
-        public override int GetHashCode()
-        {
-            return Name?.GetHashCode() ?? 0;
-        }
-    }
-
-    /// <summary>
-    /// This sucks, find a better way
-    /// </summary>
-    public class TypeCollectionContext
-    {
-        public TypeCollectionContext(
-            Func<Type, IGraphType> resolver,
-            Action<string, IGraphType, TypeCollectionContext> addType)
-        {
-            ResolveType = resolver;
-            AddType = addType;
-        }
-
-        public Func<Type, IGraphType> ResolveType { get; private set; }
-        public Action<string, IGraphType, TypeCollectionContext> AddType { get; private set; }
+        /// <inheritdoc />
+        public override int GetHashCode() => Name?.GetHashCode() ?? 0;
     }
 }

@@ -1,43 +1,35 @@
-﻿using System;
-using System.Linq;
-using GraphQL.Language.AST;
 using GraphQL.Utilities;
+using GraphQL.Validation.Errors;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// Known type names
+    /// Known type names:
     ///
     /// A GraphQL document is only valid if referenced types (specifically
     /// variable definitions and fragment conditions) are defined by the type schema.
     /// </summary>
     public class KnownTypeNames : IValidationRule
     {
-        public Func<string, string[], string> UnknownTypeMessage = (type, suggestedTypes) =>
-        {
-            var message = $"Unknown type {type}.";
-            if (suggestedTypes != null && suggestedTypes.Length > 0)
-            {
-                message += $" Did you mean {StringUtils.QuotedOrList(suggestedTypes)}?";
-            }
-            return message;
-        };
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly KnownTypeNames Instance = new();
 
-        public INodeVisitor Validate(ValidationContext context)
+        /// <inheritdoc/>
+        /// <exception cref="KnownTypeNamesError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(_nodeVisitor);
+
+        private static readonly INodeVisitor _nodeVisitor = new MatchingNodeVisitor<GraphQLNamedType>(leave: (node, context) =>
         {
-            return new EnterLeaveListener(_ =>
+            var type = context.Schema.AllTypes[node.Name];
+            if (type == null)
             {
-                _.Match<NamedType>(leave: node =>
-                {
-                    var type = context.Schema.FindType(node.Name);
-                    if (type == null)
-                    {
-                        var typeNames = context.Schema.AllTypes.Select(x => x.Name).ToArray();
-                        var suggestionList = StringUtils.SuggestionList(node.Name, typeNames);
-                        context.ReportError(new ValidationError(context.OriginalQuery, "5.4.1.2", UnknownTypeMessage(node.Name, suggestionList), node));
-                    }
-                });
-            });
-        }
+                var typeNames = context.Schema.AllTypes.Dictionary.Values.Select(x => x.Name).ToArray();
+                var suggestionList = StringUtils.SuggestionList(node.Name.StringValue, typeNames); //ISSUE:allocation
+                context.ReportError(new KnownTypeNamesError(context, node, suggestionList));
+            }
+        });
     }
 }

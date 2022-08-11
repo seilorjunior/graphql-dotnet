@@ -1,23 +1,32 @@
-﻿using System.Collections.Generic;
-using System.Threading.Tasks;
-using GraphQL.Types;
-
 namespace GraphQL.Instrumentation
 {
-    public class InstrumentFieldsMiddleware
+    /// <summary>
+    /// Middleware required for Apollo tracing to record performance metrics of field resolvers.
+    /// </summary>
+    public class InstrumentFieldsMiddleware : IFieldMiddleware
     {
-        public Task<object> Resolve(ResolveFieldContext context, FieldMiddlewareDelegate next)
+        /// <inheritdoc/>
+        public ValueTask<object?> ResolveAsync(IResolveFieldContext context, FieldMiddlewareDelegate next)
         {
-            var metadata = new Dictionary<string, object>
+            return context.Metrics.Enabled
+                ? ResolveWhenMetricsEnabledAsync(context, next)
+                : next(context);
+        }
+
+        private async ValueTask<object?> ResolveWhenMetricsEnabledAsync(IResolveFieldContext context, FieldMiddlewareDelegate next)
+        {
+            var name = context.FieldAst.Name.StringValue; //ISSUE:allocation
+
+            var metadata = new Dictionary<string, object?>
             {
-                {"typeName", context.ParentType.Name},
-                {"fieldName", context.FieldName}
+                { "typeName", context.ParentType.Name },
+                { "fieldName", name },
+                { "returnTypeName", context.FieldDefinition.ResolvedType!.ToString() },
+                { "path", context.Path },
             };
 
-            using (context.Metrics.Subject("field", context.FieldName, metadata))
-            {
-                return next(context);
-            }
+            using (context.Metrics.Subject("field", name, metadata))
+                return await next(context).ConfigureAwait(false);
         }
     }
 }

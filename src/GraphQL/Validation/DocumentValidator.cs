@@ -1,98 +1,136 @@
-using System.Collections.Generic;
-using System.Linq;
-using GraphQL.Language.AST;
-using GraphQL.Types;
 using GraphQL.Validation.Rules;
 
 namespace GraphQL.Validation
 {
+    /// <summary>
+    /// Validates a document against a set of validation rules and returns a list of the errors found.
+    /// </summary>
     public interface IDocumentValidator
     {
-        IValidationResult Validate(
-            string originalQuery,
-            ISchema schema,
-            Document document,
-            IEnumerable<IValidationRule> rules = null,
-            object userContext = null,
-            Inputs inputs = null);
+        /// <inheritdoc cref="IDocumentValidator"/>
+        Task<(IValidationResult validationResult, Variables variables)> ValidateAsync(in ValidationOptions options);
     }
 
+    /// <inheritdoc/>
     public class DocumentValidator : IDocumentValidator
     {
-        public IValidationResult Validate(
-            string originalQuery,
-            ISchema schema,
-            Document document,
-            IEnumerable<IValidationRule> rules = null,
-            object userContext = null,
-            Inputs inputs = null)
+        // frequently reused objects
+        private ValidationContext? _reusableValidationContext;
+
+        /// <summary>
+        /// Returns the default set of validation rules.
+        /// </summary>
+        public static readonly IEnumerable<IValidationRule> CoreRules = new List<IValidationRule>
         {
-            if (!schema.Initialized)
-            {
-                schema.Initialize();
-            }
+            UniqueOperationNames.Instance,
+            LoneAnonymousOperation.Instance,
+            SingleRootFieldSubscriptions.Instance,
+            KnownTypeNames.Instance,
+            FragmentsOnCompositeTypes.Instance,
+            VariablesAreInputTypes.Instance,
+            ScalarLeafs.Instance,
+            FieldsOnCorrectType.Instance,
+            UniqueFragmentNames.Instance,
+            KnownFragmentNames.Instance,
+            NoUnusedFragments.Instance,
+            PossibleFragmentSpreads.Instance,
+            NoFragmentCycles.Instance,
+            NoUndefinedVariables.Instance,
+            NoUnusedVariables.Instance,
+            UniqueVariableNames.Instance,
+            KnownDirectivesInAllowedLocations.Instance,
+            UniqueDirectivesPerLocation.Instance,
+            KnownArgumentNames.Instance,
+            UniqueArgumentNames.Instance,
+            ArgumentsOfCorrectType.Instance,
+            ProvidedNonNullArguments.Instance,
+            DefaultValuesOfCorrectType.Instance,
+            VariablesInAllowedPosition.Instance,
+            UniqueInputFieldNames.Instance,
+            OverlappingFieldsCanBeMerged.Instance,
+        };
 
-            var context = new ValidationContext
-            {
-                OriginalQuery = originalQuery,
-                Schema = schema,
-                Document = document,
-                TypeInfo = new TypeInfo(schema),
-                UserContext = userContext,
-                Inputs = inputs
-            };
+        /// <inheritdoc/>
+        public Task<(IValidationResult validationResult, Variables variables)> ValidateAsync(in ValidationOptions options)
+        {
+            options.Schema.Initialize();
 
-            if (rules == null)
-            {
-                rules = CoreRules();
-            }
+            var context = System.Threading.Interlocked.Exchange(ref _reusableValidationContext, null) ?? new ValidationContext();
+            context.TypeInfo = new TypeInfo(options.Schema);
+            context.Schema = options.Schema;
+            context.Document = options.Document;
+            context.UserContext = options.UserContext;
+            context.Variables = options.Variables;
+            context.Extensions = options.Extensions;
+            context.Operation = options.Operation;
+            context.RequestServices = options.RequestServices;
+            context.CancellationToken = options.CancellationToken;
 
-            var visitors = rules.Select(x => x.Validate(context)).ToList();
-
-            visitors.Insert(0, context.TypeInfo);
-// #if DEBUG
-//             visitors.Insert(1, new DebugNodeVisitor());
-// #endif
-
-            var basic = new BasicVisitor(visitors.ToArray());
-
-            basic.Visit(document);
-
-            var result = new ValidationResult();
-            result.Errors.AddRange(context.Errors);
-            return result;
+            return ValidateAsyncCoreAsync(context, options.Rules ?? CoreRules);
         }
 
-        public static List<IValidationRule> CoreRules()
+        private async Task<(IValidationResult validationResult, Variables variables)> ValidateAsyncCoreAsync(ValidationContext context, IEnumerable<IValidationRule> rules)
         {
-            var rules = new List<IValidationRule>
+            try
             {
-                new UniqueOperationNames(),
-                new LoneAnonymousOperation(),
-                new KnownTypeNames(),
-                new FragmentsOnCompositeTypes(),
-                new VariablesAreInputTypes(),
-                new ScalarLeafs(),
-                new FieldsOnCorrectType(),
-                new UniqueFragmentNames(),
-                new KnownFragmentNames(),
-                new NoUnusedFragments(),
-                new PossibleFragmentSpreads(),
-                new NoFragmentCycles(),
-                new NoUndefinedVariables(),
-                new NoUnusedVariables(),
-                new UniqueVariableNames(),
-                new KnownDirectives(),
-                new UniqueDirectivesPerLocation(),
-                new KnownArgumentNames(),
-                new UniqueArgumentNames(),
-                new ArgumentsOfCorrectType(),
-                new ProvidedNonNullArguments(),
-                new DefaultValuesOfCorrectType(),
-                new VariablesInAllowedPosition(),
-                new UniqueInputFieldNames()
-            };
-            return rules;
+                Variables? variables = null;
+                List<IVariableVisitor>? variableVisitors = null;
+
+                if (rules.Any())
+                {
+                    var visitors = new List<INodeVisitor>
+                    {
+                        context.TypeInfo
+                    };
+
+                    if (rules is List<IValidationRule> list) //TODO:allocation - optimization for List+Enumerator<IvalidationRule>
+                    {
+                        foreach (var rule in list)
+                        {
+                            if (rule is IVariableVisitorProvider provider)
+                            {
+                                var variableVisitor = provider.GetVisitor(context);
+                                if (variableVisitor != null)
+                                    (variableVisitors ??= new()).Add(variableVisitor);
+                            }
+                            var visitor = await rule.ValidateAsync(context).ConfigureAwait(false);
+                            if (visitor != null)
+                                visitors.Add(visitor);
+                        }
+                    }
+                    else
+                    {
+                        foreach (var rule in rules)
+                        {
+                            if (rule is IVariableVisitorProvider provider)
+                            {
+                                var variableVisitor = provider.GetVisitor(context);
+                                if (variableVisitor != null)
+                                    (variableVisitors ??= new()).Add(variableVisitor);
+                            }
+                            var visitor = await rule.ValidateAsync(context).ConfigureAwait(false);
+                            if (visitor != null)
+                                visitors.Add(visitor);
+                        }
+                    }
+                    await new BasicVisitor(visitors).VisitAsync(context.Document, new BasicVisitor.State(context)).ConfigureAwait(false);
+                }
+
+                // can report errors even without rules enabled
+                variables = context.GetVariableValues(variableVisitors == null ? null : variableVisitors.Count == 1 ? variableVisitors[0] : new CompositeVariableVisitor(variableVisitors));
+
+                return context.HasErrors
+                    ? (new ValidationResult(context.Errors), variables)
+                    : (SuccessfullyValidatedResult.Instance, variables);
+            }
+            finally
+            {
+                if (!context.HasErrors)
+                {
+                    context.Reset();
+                    _ = System.Threading.Interlocked.CompareExchange(ref _reusableValidationContext, context, null);
+                }
+            }
         }
     }
 }

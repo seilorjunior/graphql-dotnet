@@ -1,18 +1,19 @@
 using GraphQL.Types;
+using GraphQL.Types.Relay;
 
-namespace GraphQL.StarWars.Types
+namespace GraphQL.StarWars.Types;
+
+public class CharacterInterface : InterfaceGraphType<StarWarsCharacter>
 {
-    public class CharacterInterface : InterfaceGraphType<StarWarsCharacter>
+    public CharacterInterface()
     {
-        public CharacterInterface()
-        {
-            Name = "Character";
+        Name = "Character";
 
-            Field(d => d.Id).Description("The id of the character.");
-            Field(d => d.Name, nullable: true).Description("The name of the character.");
+        Field<NonNullGraphType<StringGraphType>>("id", "The id of the character.", resolve: context => context.Source.Id);
+        Field<StringGraphType>("name", "The name of the character.", resolve: context => context.Source.Name);
 
-            Field<ListGraphType<CharacterInterface>>("friends");
-            Field<ListGraphType<EpisodeEnum>>("appearsIn", "Which movie they appear in.");
-        }
+        Field<ListGraphType<CharacterInterface>>("friends");
+        Field<ConnectionType<CharacterInterface, EdgeType<CharacterInterface>>>("friendsConnection");
+        Field<ListGraphType<EpisodeEnum>>("appearsIn", "Which movie they appear in.");
     }
 }

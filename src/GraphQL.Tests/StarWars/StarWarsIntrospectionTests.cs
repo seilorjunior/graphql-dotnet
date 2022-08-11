@@ -1,23 +1,21 @@
-using Xunit;
+namespace GraphQL.Tests.StarWars;
 
-namespace GraphQL.Tests.StarWars
+public class StarWarsIntrospectionTests : StarWarsTestBase
 {
-    public class StarWarsIntrospectionTests : StarWarsTestBase
+    [Fact]
+    public void provides_typename()
     {
-        [Fact]
-        public void provides_typename()
-        {
-            var query = "{ hero { __typename name } }";
+        var query = "{ hero { __typename name } }";
 
-            var expected = "{ hero: { __typename: 'Droid', name: 'R2-D2' } }";
+        var expected = @"{ ""hero"": { ""__typename"": ""Droid"", ""name"": ""R2-D2"" } }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void allows_querying_schema_for_an_object_kind()
-        {
-            var query = @"
+    [Fact]
+    public void allows_querying_schema_for_an_object_kind()
+    {
+        var query = @"
                 query IntrospectionDroidKindQuery {
                   __type(name: ""Droid"") {
                     name,
@@ -26,20 +24,20 @@ namespace GraphQL.Tests.StarWars
                 }
             ";
 
-            var expected = @"{
-              __type: {
-                name: 'Droid',
-                kind: 'OBJECT'
+        var expected = @"{
+              ""__type"": {
+                ""name"": ""Droid"",
+                ""kind"": ""OBJECT""
               }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void allows_querying_schema_for_an_interface_kind()
-        {
-            var query = @"
+    [Fact]
+    public void allows_querying_schema_for_an_interface_kind()
+    {
+        var query = @"
             query IntrospectionCharacterKindQuery {
               __type(name: ""Character"") {
                 name
@@ -48,20 +46,20 @@ namespace GraphQL.Tests.StarWars
             }
             ";
 
-            var expected = @"{
-              __type: {
-                name: 'Character',
-                kind: 'INTERFACE'
+        var expected = @"{
+              ""__type"": {
+                ""name"": ""Character"",
+                ""kind"": ""INTERFACE""
               }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void allows_querying_schema_for_possibleTypes_of_an_interface()
-        {
-            var query = @"
+    [Fact]
+    public void allows_querying_schema_for_possibleTypes_of_an_interface()
+    {
+        var query = @"
             query IntrospectionCharacterKindQuery {
               __type(name: ""Character"") {
                 name
@@ -74,24 +72,24 @@ namespace GraphQL.Tests.StarWars
             }
             ";
 
-            var expected = @"{
-              __type: {
-                name: 'Character',
-                kind: 'INTERFACE',
-                possibleTypes: [
-                  { name: 'Human', kind: 'OBJECT' },
-                  { name: 'Droid', kind: 'OBJECT' },
+        var expected = @"{
+              ""__type"": {
+                ""name"": ""Character"",
+                ""kind"": ""INTERFACE"",
+                ""possibleTypes"": [
+                  { ""name"": ""Human"", ""kind"": ""OBJECT"" },
+                  { ""name"": ""Droid"", ""kind"": ""OBJECT"" }
                 ]
               }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void allows_querying_the_schema_for_object_fields()
-        {
-            var query = @"
+    [Fact]
+    public void allows_querying_the_schema_for_object_fields()
+    {
+        var query = @"
             query IntrospectionDroidFieldsQuery {
               __type(name: ""Droid"") {
                 name
@@ -106,56 +104,63 @@ namespace GraphQL.Tests.StarWars
             }
             ";
 
-            var expected = @"{
-                __type: {
-                  name: 'Droid',
-                  fields: [
+        var expected = @"{
+                ""__type"": {
+                  ""name"": ""Droid"",
+                  ""fields"": [
                     {
-                      name: 'appearsIn',
-                      type: {
-                        name: null,
-                        kind: 'LIST'
+                      ""name"": ""id"",
+                      ""type"": {
+                        ""name"": null,
+                        ""kind"": ""NON_NULL""
                       }
                     },
                     {
-                      name: 'friends',
-                      type: {
-                        name: null,
-                        kind: 'LIST'
+                      ""name"": ""name"",
+                      ""type"": {
+                        ""name"": ""String"",
+                        ""kind"": ""SCALAR""
                       }
                     },
                     {
-                      name: 'id',
-                      type: {
-                        name: null,
-                        kind: 'NON_NULL'
+                      ""name"": ""friends"",
+                      ""type"": {
+                        ""name"": null,
+                        ""kind"": ""LIST""
                       }
                     },
                     {
-                      name: 'name',
-                      type: {
-                        name: 'String',
-                        kind: 'SCALAR'
+                      ""name"": ""friendsConnection"",
+                      ""type"": {
+                        ""name"": ""CharacterInterfaceConnection"",
+                        ""kind"": ""OBJECT""
                       }
                     },
                     {
-                      name: 'primaryFunction',
-                      type: {
-                        name: 'String',
-                        kind: 'SCALAR'
+                      ""name"": ""appearsIn"",
+                      ""type"": {
+                        ""name"": null,
+                        ""kind"": ""LIST""
+                      }
+                    },
+                    {
+                      ""name"": ""primaryFunction"",
+                      ""type"": {
+                        ""name"": ""String"",
+                        ""kind"": ""SCALAR""
                       }
                     }
                   ]
                 }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void allows_querying_the_schema_for_documentation()
-        {
-            var query = @"
+    [Fact]
+    public void allows_querying_the_schema_for_documentation()
+    {
+        var query = @"
             query IntrospectionDroidDescriptionQuery {
               __type(name: ""Droid"") {
                 name
@@ -163,20 +168,20 @@ namespace GraphQL.Tests.StarWars
               }
             }
             ";
-            var expected = @"{
-            '__type': {
-              'name': 'Droid',
-              'description': 'A mechanical creature in the Star Wars universe.'
-            }
+        var expected = @"{
+              ""__type"": {
+                ""name"": ""Droid"",
+                ""description"": ""A mechanical creature in the Star Wars universe.""
+              }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void allows_querying_the_schema()
-        {
-            var query = @"
+    [Fact]
+    public void allows_querying_the_schema()
+    {
+        var query = @"
             query SchemaIntrospectionQuery {
               __schema {
                 types { name, kind }
@@ -192,138 +197,149 @@ namespace GraphQL.Tests.StarWars
               }
             }
             ";
-            var expected = @"{
-            '__schema': {
-              'types': [
-                {
-                  'name': 'String',
-                  'kind': 'SCALAR'
-                },
-                {
-                  'name': 'Boolean',
-                  'kind': 'SCALAR'
-                },
-                {
-                  'name': 'Float',
-                  'kind': 'SCALAR'
-                },
-                {
-                  'name': 'Int',
-                  'kind': 'SCALAR'
-                },
-                {
-                  'name': 'ID',
-                  'kind': 'SCALAR'
-                },
-                {
-                  'name': 'Date',
-                  'kind': 'SCALAR'
-                },
-                {
-                  'name': 'Decimal',
-                  'kind': 'SCALAR'
-                },
-                {
-                  'name': '__Schema',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': '__Type',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': '__TypeKind',
-                  'kind': 'ENUM'
-                },
-                {
-                  'name': '__Field',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': '__InputValue',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': '__EnumValue',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': '__Directive',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': '__DirectiveLocation',
-                  'kind': 'ENUM'
-                },
-                {
-                  'name': 'Query',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': 'Character',
-                  'kind': 'INTERFACE'
-                },
-                {
-                  'name': 'Episode',
-                  'kind': 'ENUM'
-                },
-                {
-                  'name': 'Human',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': 'Droid',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': 'Mutation',
-                  'kind': 'OBJECT'
-                },
-                {
-                  'name': 'HumanInput',
-                  'kind': 'INPUT_OBJECT'
+        var expected = @"{
+                ""__schema"": {
+                    ""types"": [
+                    {
+                        ""name"": ""__DirectiveLocation"",
+                        ""kind"": ""ENUM""
+                    },
+                    {
+                        ""name"": ""__TypeKind"",
+                        ""kind"": ""ENUM""
+                    },
+                    {
+                        ""name"": ""__EnumValue"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""String"",
+                        ""kind"": ""SCALAR""
+                    },
+                    {
+                        ""name"": ""Boolean"",
+                        ""kind"": ""SCALAR""
+                    },
+                    {
+                        ""name"": ""__Directive"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""__InputValue"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""__Type"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""__Field"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""__Schema"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""Query"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""Character"",
+                        ""kind"": ""INTERFACE""
+                    },
+                    {
+                        ""name"": ""CharacterInterfaceConnection"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""Int"",
+                        ""kind"": ""SCALAR""
+                    },
+                    {
+                        ""name"": ""PageInfo"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""CharacterInterfaceEdge"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""Episode"",
+                        ""kind"": ""ENUM""
+                    },
+                    {
+                        ""name"": ""Human"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""Droid"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""Mutation"",
+                        ""kind"": ""OBJECT""
+                    },
+                    {
+                        ""name"": ""HumanInput"",
+                        ""kind"": ""INPUT_OBJECT""
+                    }
+                    ],
+                    ""queryType"": {
+                      ""name"": ""Query"",
+                      ""kind"": ""OBJECT""
+                    },
+                    ""mutationType"": {
+                      ""name"": ""Mutation""
+                    },
+                    ""directives"": [
+                    {
+                        ""name"": ""include"",
+                        ""description"": ""Directs the executor to include this field or fragment only when the 'if' argument is true."",
+                        ""onOperation"": false,
+                        ""onFragment"": true,
+                        ""onField"": true
+                    },
+                    {
+                        ""name"": ""skip"",
+                        ""description"": ""Directs the executor to skip this field or fragment when the 'if' argument is true."",
+                        ""onOperation"": false,
+                        ""onFragment"": true,
+                        ""onField"": true
+                    },
+                    {
+                        ""name"": ""deprecated"",
+                        ""description"": ""Marks an element of a GraphQL schema as no longer supported."",
+                        ""onOperation"": false,
+                        ""onFragment"": false,
+                        ""onField"": false
+                    }
+                    ]
                 }
-              ],
-              'queryType': {
-                'name': 'Query',
-                'kind': 'OBJECT'
-              },
-              'mutationType': {
-                'name': 'Mutation'
-              },
-              'directives': [
-                {
-                  'name': 'include',
-                  'description': 'Directs the executor to include this field or fragment only when the \'if\' argument is true.',
-                  'onOperation': false,
-                  'onFragment': true,
-                  'onField': true
-                },
-                {
-                  'name': 'skip',
-                  'description': 'Directs the executor to skip this field or fragment when the \'if\' argument is true.',
-                  'onOperation': false,
-                  'onFragment': true,
-                  'onField': true
-                },
-                {
-                  'name': 'deprecated',
-                  'description': 'Marks an element of a GraphQL schema as no longer supported.',
-                  'onOperation': false,
-                  'onFragment': false,
-                  'onField': false
-                }
-              ]
-            }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
+    }
 
-        [Fact]
-        public void allows_querying_field_args()
-        {
-            var query = @"
+    // https://github.com/graphql-dotnet/graphql-dotnet/issues/2233
+    [Fact]
+    public void allow_querying_input_object_type_fields()
+    {
+        var query = @"{
+  __type(name: ""HumanInput"") {
+    fields { name }
+    inputFields { name }
+  }
+}
+            ";
+
+        AssertQuerySuccess(query, "HumanInputIntrospectionResult".ReadJsonResult());
+    }
+
+    [Fact]
+    public void allows_querying_field_args()
+    {
+        var query = @"
             query SchemaIntrospectionQuery {
               __schema {
                 queryType {
@@ -347,56 +363,55 @@ namespace GraphQL.Tests.StarWars
               }
             }
             ";
-            var expected = @"{
-            '__schema': {
-              'queryType': {
-                'fields': [
-                  {
-                    'name': 'droid',
-                    'args': [
-                      {
-                        'name': 'id',
-                        'description': 'id of the droid',
-                        'type': {
-                          'name': null,
-                          'kind': 'NON_NULL',
-                          'ofType': {
-                            'name': 'String',
-                            'kind': 'SCALAR'
-                          }
-                        },
-                        'defaultValue': 'null'
-                      }
-                    ]
-                  },
-                  {
-                    'name': 'hero',
-                    'args': []
-                  },
-                  {
-                    'name': 'human',
-                    'args': [
-                      {
-                        'name': 'id',
-                        'description': 'id of the human',
-                        'type': {
-                          'name': null,
-                          'kind': 'NON_NULL',
-                          'ofType': {
-                            'name': 'String',
-                            'kind': 'SCALAR'
-                          }
-                        },
-                        'defaultValue': 'null'
-                      }
-                    ]
-                  }
-                ]
+        var expected = @"{
+              ""__schema"": {
+                ""queryType"": {
+                  ""fields"": [
+                    {
+                      ""name"": ""hero"",
+                      ""args"": []
+                    },
+                    {
+                      ""name"": ""human"",
+                      ""args"": [
+                        {
+                          ""name"": ""id"",
+                          ""description"": ""id of the human"",
+                          ""type"": {
+                            ""name"": null,
+                            ""kind"": ""NON_NULL"",
+                            ""ofType"": {
+                              ""name"": ""String"",
+                              ""kind"": ""SCALAR""
+                            }
+                          },
+                          ""defaultValue"": null
+                        }
+                      ]
+                    },
+                    {
+                      ""name"": ""droid"",
+                      ""args"": [
+                        {
+                          ""name"": ""id"",
+                          ""description"": ""id of the droid"",
+                          ""type"": {
+                            ""name"": null,
+                            ""kind"": ""NON_NULL"",
+                            ""ofType"": {
+                              ""name"": ""String"",
+                              ""kind"": ""SCALAR""
+                            }
+                          },
+                          ""defaultValue"": null
+                        }
+                      ]
+                    }
+                  ]
+                }
               }
-            }
             }";
 
-            AssertQuerySuccess(query, expected);
-        }
+        AssertQuerySuccess(query, expected);
     }
 }

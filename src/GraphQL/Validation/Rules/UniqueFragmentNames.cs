@@ -1,45 +1,38 @@
-﻿using System.Collections.Generic;
-using GraphQL.Language.AST;
+using GraphQL.Validation.Errors;
+using GraphQLParser;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// Unique fragment names
+    /// Unique fragment names:
     ///
     /// A GraphQL document is only valid if all defined fragments have unique names.
     /// </summary>
     public class UniqueFragmentNames : IValidationRule
     {
-        public string DuplicateFragmentNameMessage(string fragName)
-        {
-            return $"There can only be one fragment named \"{fragName}\"";
-        }
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly UniqueFragmentNames Instance = new();
 
-        public INodeVisitor Validate(ValidationContext context)
-        {
-            var knownFragments = new Dictionary<string, FragmentDefinition>();
+        /// <inheritdoc/>
+        /// <exception cref="UniqueFragmentNamesError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(context.Document.FragmentsCount() > 1 ? _nodeVisitor : null);
 
-            return new EnterLeaveListener(_ =>
+        private static readonly INodeVisitor _nodeVisitor = new MatchingNodeVisitor<GraphQLFragmentDefinition>((fragmentDefinition, context) =>
             {
-                _.Match<FragmentDefinition>(fragmentDefinition =>
+                var knownFragments = context.TypeInfo.UniqueFragmentNames_KnownFragments ??= new();
+
+                var fragmentName = fragmentDefinition.FragmentName.Name;
+                if (knownFragments.TryGetValue(fragmentName, out var frag)) // .NET 2.2+ has TryAdd
                 {
-                    var fragmentName = fragmentDefinition.Name;
-                    if (knownFragments.ContainsKey(fragmentName))
-                    {
-                        var error = new ValidationError(
-                            context.OriginalQuery,
-                            "5.4.1.1",
-                            DuplicateFragmentNameMessage(fragmentName),
-                            knownFragments[fragmentName],
-                            fragmentDefinition);
-                        context.ReportError(error);
-                    }
-                    else
-                    {
-                        knownFragments[fragmentName] = fragmentDefinition;
-                    }
-                });
+                    context.ReportError(new UniqueFragmentNamesError(context, frag, fragmentDefinition));
+                }
+                else
+                {
+                    knownFragments[fragmentName] = fragmentDefinition;
+                }
             });
-        }
     }
 }

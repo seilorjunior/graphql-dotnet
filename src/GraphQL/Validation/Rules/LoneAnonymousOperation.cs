@@ -1,39 +1,32 @@
-﻿using System;
-using GraphQL.Language.AST;
+using GraphQL.Validation.Errors;
+using GraphQLParser;
+using GraphQLParser.AST;
 
 namespace GraphQL.Validation.Rules
 {
     /// <summary>
-    /// Lone anonymous operation
+    /// Lone anonymous operation:
     ///
     /// A GraphQL document is only valid if when it contains an anonymous operation
     /// (the query short-hand) that it contains only that one operation definition.
     /// </summary>
     public class LoneAnonymousOperation : IValidationRule
     {
-        public Func<string> AnonOperationNotAloneMessage => () =>
-            "This anonymous operation must be the only defined operation.";
+        /// <summary>
+        /// Returns a static instance of this validation rule.
+        /// </summary>
+        public static readonly LoneAnonymousOperation Instance = new();
 
-        public INodeVisitor Validate(ValidationContext context)
+        /// <inheritdoc/>
+        /// <exception cref="LoneAnonymousOperationError"/>
+        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(_nodeVisitor);
+
+        private static readonly INodeVisitor _nodeVisitor = new MatchingNodeVisitor<GraphQLOperationDefinition>((op, context) =>
         {
-            var operationCount = context.Document.Operations.Count;
-
-            return new EnterLeaveListener(_ =>
+            if (op.Name is null && context.Document.OperationsCount() > 1)
             {
-                _.Match<Operation>(op =>
-                {
-                    if (string.IsNullOrWhiteSpace(op.Name)
-                        && operationCount > 1)
-                    {
-                        var error = new ValidationError(
-                            context.OriginalQuery,
-                            "5.1.2.1",
-                            AnonOperationNotAloneMessage(),
-                            op);
-                        context.ReportError(error);
-                    }
-                });
-            });
-        }
+                context.ReportError(new LoneAnonymousOperationError(context, op));
+            }
+        });
     }
 }

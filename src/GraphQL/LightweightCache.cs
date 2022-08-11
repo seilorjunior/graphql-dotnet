@@ -1,6 +1,4 @@
-using System;
 using System.Collections;
-using System.Collections.Generic;
 
 namespace GraphQL
 {
@@ -12,11 +10,9 @@ namespace GraphQL
     /// <seealso cref="System.Collections.Generic.IEnumerable{TValue}" />
     /// <remarks>https://github.com/JasperFx/baseline/blob/master/src/Baseline/LightweightCache.cs</remarks>
     public class LightweightCache<TKey, TValue> : IEnumerable<TValue>
+        where TKey : notnull
     {
         private readonly IDictionary<TKey, TValue> _values;
-
-        private Func<TValue, TKey> _getKey = delegate { throw new NotImplementedException(); };
-
         private Func<TKey, TValue> _onMissing = delegate (TKey key)
         {
             var message = $"Key '{key}' could not be found";
@@ -62,53 +58,28 @@ namespace GraphQL
             _values = dictionary;
         }
 
-
         /// <summary>
         /// Action to perform if the key is missing. Defaults to <see cref="KeyNotFoundException"/>
         /// </summary>
         public Func<TKey, TValue> OnMissing
         {
-            set { _onMissing = value; }
-        }
-
-        public Func<TValue, TKey> GetKey
-        {
-            get { return _getKey; }
-            set { _getKey = value; }
+            set => _onMissing = value;
         }
 
         /// <summary>
         /// Gets the count.
         /// </summary>
-        public int Count
-        {
-            get { return _values.Count; }
-        }
-
-        public TValue First
-        {
-            get
-            {
-                foreach (var pair in _values)
-                {
-                    return pair.Value;
-                }
-
-                return default(TValue);
-            }
-        }
+        public int Count => _values.Count;
 
         /// <summary>
-        /// Gets or sets the <see cref="TValue"/> with the specified key.
+        /// Gets or sets the <typeparamref name="TValue"/> with the specified key.
         /// </summary>
         /// <param name="key">The key.</param>
         public TValue this[TKey key]
         {
             get
             {
-                TValue value;
-
-                if (!_values.TryGetValue(key, out value))
+                if (!_values.TryGetValue(key, out var value))
                 {
                     value = _onMissing(key);
 
@@ -141,30 +112,21 @@ namespace GraphQL
         /// <summary>
         /// Returns an enumerator that iterates through the values.
         /// </summary>
-        /// <returns>An <see cref="T:System.Collections.IEnumerator"></see> object that can be used to iterate through the collection.</returns>
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            return ((IEnumerable<TValue>)this).GetEnumerator();
-        }
+        /// <returns>An <see cref="System.Collections.IEnumerator"></see> object that can be used to iterate through the collection.</returns>
+        IEnumerator IEnumerable.GetEnumerator() => ((IEnumerable<TValue>)this).GetEnumerator();
 
         /// <summary>
         /// Returns an enumerator that iterates through the values.
         /// </summary>
         /// <returns>An enumerator that can be used to iterate through the collection.</returns>
-        public IEnumerator<TValue> GetEnumerator()
-        {
-            return _values.Values.GetEnumerator();
-        }
+        public IEnumerator<TValue> GetEnumerator() => _values.Values.GetEnumerator();
 
         /// <summary>
         /// Guarantees that the Cache has a value for a given key.
         /// If it does not already exist, it's created using the OnMissing action.
         /// </summary>
         /// <param name="key">The key.</param>
-        public void FillDefault(TKey key)
-        {
-            Fill(key, _onMissing(key));
-        }
+        public void FillDefault(TKey key) => Fill(key, _onMissing(key));
 
         /// <summary>
         /// Guarantees that the Cache has a value for a given key.
@@ -187,18 +149,7 @@ namespace GraphQL
         /// </summary>
         /// <param name="key">The key to retrieve.</param>
         /// <param name="value">The value for the associated key or <c>default(TValue)</c>.</param>
-        public bool TryRetrieve(TKey key, out TValue value)
-        {
-            value = default(TValue);
-
-            if (_values.ContainsKey(key))
-            {
-                value = _values[key];
-                return true;
-            }
-
-            return false;
-        }
+        public bool TryRetrieve(TKey key, out TValue? value) => _values.TryGetValue(key, out value);
 
         /// <summary>
         /// Performs the specified action for each value.
@@ -230,10 +181,7 @@ namespace GraphQL
         /// Equivalent to ContainsKey
         /// </summary>
         /// <param name="key">The key.</param>
-        public bool Has(TKey key)
-        {
-            return _values.ContainsKey(key);
-        }
+        public bool Has(TKey key) => _values.ContainsKey(key);
 
         /// <summary>
         /// Determines if a given value exists in the dictionary.
@@ -241,9 +189,9 @@ namespace GraphQL
         /// <param name="predicate">The search predicate.</param>
         public bool Exists(Predicate<TValue> predicate)
         {
-            var returnValue = false;
+            bool returnValue = false;
 
-            Each(delegate (TValue value) { returnValue |= predicate(value); });
+            Each(value => returnValue |= predicate(value));
 
             return returnValue;
         }
@@ -253,7 +201,7 @@ namespace GraphQL
         /// </summary>
         /// <param name="predicate">The search predicate.</param>
         /// <returns>The first matching value</returns>
-        public TValue Find(Predicate<TValue> predicate)
+        public TValue? Find(Predicate<TValue> predicate)
         {
             foreach (var pair in _values)
             {
@@ -263,7 +211,7 @@ namespace GraphQL
                 }
             }
 
-            return default(TValue);
+            return default;
         }
 
         /// <summary>
@@ -292,16 +240,13 @@ namespace GraphQL
         /// <summary>
         /// Clears this instance of all key/value pairs.
         /// </summary>
-        public void Clear()
-        {
-            _values.Clear();
-        }
+        public void Clear() => _values.Clear();
 
         /// <summary>
         /// If the dictionary contains the indicated key, performs the action with its value.
         /// </summary>
         /// <param name="key">The key.</param>
-        /// <param name="action">The action to be perfomed.</param>
+        /// <param name="action">The action to be performed.</param>
         public void WithValue(TKey key, Action<TValue> action)
         {
             if (_values.ContainsKey(key))
@@ -313,9 +258,6 @@ namespace GraphQL
         /// <summary>
         /// Equivalent to Clear()
         /// </summary>
-        public void ClearAll()
-        {
-            _values.Clear();
-        }
+        public void ClearAll() => _values.Clear();
     }
 }

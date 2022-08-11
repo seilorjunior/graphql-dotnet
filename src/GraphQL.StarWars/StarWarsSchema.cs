@@ -1,14 +1,16 @@
-﻿using GraphQL.Types;
+using GraphQL.Types;
+using Microsoft.Extensions.DependencyInjection;
 
-namespace GraphQL.StarWars
+namespace GraphQL.StarWars;
+
+public class StarWarsSchema : Schema
 {
-    public class StarWarsSchema : Schema
+    public StarWarsSchema(IServiceProvider serviceProvider)
+        : base(serviceProvider)
     {
-        public StarWarsSchema(IDependencyResolver resolver)
-            : base(resolver)
-        {
-            Query = resolver.Resolve<StarWarsQuery>();
-            Mutation = resolver.Resolve<StarWarsMutation>();
-        }
+        Query = serviceProvider.GetRequiredService<StarWarsQuery>();
+        Mutation = serviceProvider.GetRequiredService<StarWarsMutation>();
+
+        Description = "Example StarWars universe schema";
     }
 }

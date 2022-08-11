@@ -1,24 +1,31 @@
-using System;
 using System.Reflection;
-using GraphQL.Reflection;
-using GraphQL.Resolvers;
 using GraphQL.Types;
 
 namespace GraphQL.Utilities
 {
+    /// <summary>
+    /// Provides configuration for specific GraphType when building schema via <see cref="SchemaBuilder"/>.
+    /// </summary>
     public class TypeConfig : MetadataProvider
     {
         private readonly LightweightCache<string, FieldConfig> _fields =
             new LightweightCache<string, FieldConfig>(f => new FieldConfig(f));
 
-        private Type _type;
+        private Type? _type;
 
+        /// <summary>
+        /// Creates an instance of <see cref="TypeConfig"/> with the specified name.
+        /// </summary>
+        /// <param name="name">Field argument name.</param>
         public TypeConfig(string name)
         {
             Name = name;
         }
 
-        public Type Type
+        /// <summary>
+        /// Gets or sets the CLR type of the GraphQL type configured by this instance.
+        /// </summary>
+        public Type? Type
         {
             get => _type;
             set
@@ -28,40 +35,55 @@ namespace GraphQL.Utilities
             }
         }
 
+        /// <summary>
+        /// Gets the name of the GraphType.
+        /// </summary>
         public string Name { get; }
-        public string Description { get; set; }
-        public string DeprecationReason { get; set; }
-        public Func<object, IObjectGraphType> ResolveType { get; set; }
-        public Func<object, bool> IsTypeOfFunc { get; set; }
 
+        /// <summary>
+        /// Gets or sets the description of the GraphType.
+        /// </summary>
+        public string? Description { get; set; }
+
+        /// <summary>
+        /// Gets or sets the reason this GraphType has been deprecated;
+        /// <see langword="null"/> if this element has not been deprecated.
+        /// </summary>
+        public string? DeprecationReason { get; set; }
+
+        /// <inheritdoc cref="IAbstractGraphType.ResolveType"/>
+        public Func<object, IObjectGraphType>? ResolveType { get; set; }
+
+        /// <inheritdoc cref="IObjectGraphType.IsTypeOf"/>
+        public Func<object, bool>? IsTypeOfFunc { get; set; }
+
+        /// <summary>
+        /// Sets the <see cref="IsTypeOfFunc"/> property to a delegate
+        /// that returns <see langword="true"/> when the object is a type
+        /// that can be cast to <typeparamref name="T"/>.
+        /// </summary>
         public void IsTypeOf<T>()
         {
-            IsTypeOfFunc = obj => obj?.GetType() == typeof(T);
+            IsTypeOfFunc = obj => obj?.GetType().IsAssignableFrom(typeof(T)) ?? false;
         }
 
-        public FieldConfig FieldFor(string field, IDependencyResolver dependencyResolver)
-        {
-            var config = _fields[field];
-            config.Accessor = Type.ToAccessor(field);
+        /// <summary>
+        /// Gets configuration for specific field of GraphType by field name.
+        /// </summary>
+        /// <param name="fieldName">Name of the field.</param>
+        public FieldConfig FieldFor(string fieldName) => _fields[fieldName];
 
-            if(Type != null)
+        private void ApplyMetadata(Type? type)
+        {
+            var attributes = type?.GetCustomAttributes<GraphQLAttribute>();
+
+            if (attributes == null)
+                return;
+
+            foreach (var a in attributes)
             {
-                if(config.Accessor == null)
-                {
-                    throw new InvalidOperationException($"Expected to find method or property {field} on {Type.Name} but could not.");
-                }
-
-                config.Resolver = new AccessorFieldResolver(config.Accessor, dependencyResolver);
-                config.Accessor.GetAttributes<GraphQLAttribute>()?.Apply(a => a.Modify(config));
+                a.Modify(this);
             }
-
-            return config;
-        }
-
-        private void ApplyMetadata(Type type)
-        {
-            var attributes = type?.GetTypeInfo().GetCustomAttributes<GraphQLAttribute>();
-            attributes?.Apply(a => a.Modify(this));
         }
     }
 }
