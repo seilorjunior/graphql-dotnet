@@ -1,9 +1,7 @@
-using GraphQL.Caching;
 using GraphQL.Execution;
 using GraphQL.Types;
 using GraphQL.Types.Relay;
 using GraphQL.Validation;
-using GraphQL.Validation.Complexity;
 
 namespace GraphQL.DI
 {
@@ -46,8 +44,6 @@ namespace GraphQL.DI
             Services.TryRegister(typeof(IDocumentExecuter<>), typeof(DocumentExecuter<>), ServiceLifetime.Singleton);
             Services.TryRegister<IDocumentBuilder, GraphQLDocumentBuilder>(ServiceLifetime.Singleton);
             Services.TryRegister<IDocumentValidator, DocumentValidator>(ServiceLifetime.Singleton);
-            Services.TryRegister<IComplexityAnalyzer, ComplexityAnalyzer>(ServiceLifetime.Singleton);
-            Services.TryRegister<IDocumentCache>(DefaultDocumentCache.Instance);
             Services.TryRegister<IErrorInfoProvider, ErrorInfoProvider>(ServiceLifetime.Singleton);
             Services.TryRegister<IExecutionStrategySelector, DefaultExecutionStrategySelector>(ServiceLifetime.Singleton);
 
@@ -62,6 +58,7 @@ namespace GraphQL.DI
             Services.TryRegister(typeof(InputObjectGraphType<>), typeof(InputObjectGraphType<>), ServiceLifetime.Transient);
             Services.TryRegister(typeof(AutoRegisteringInputObjectGraphType<>), typeof(AutoRegisteringInputObjectGraphType<>), ServiceLifetime.Transient);
             Services.TryRegister(typeof(AutoRegisteringObjectGraphType<>), typeof(AutoRegisteringObjectGraphType<>), ServiceLifetime.Transient);
+            Services.TryRegister(typeof(AutoRegisteringInterfaceGraphType<>), typeof(AutoRegisteringInterfaceGraphType<>), ServiceLifetime.Transient);
 
             // configure execution to use the default registered schema if none specified
             this.ConfigureExecutionOptions(options =>
